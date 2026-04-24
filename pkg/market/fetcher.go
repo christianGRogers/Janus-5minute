@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"janus-bot/config"
 	"janus-bot/pkg/polymarket"
 )
@@ -35,12 +34,15 @@ type MarketFetcher struct {
 	stopChan            chan struct{}
 	stoppedChan         chan struct{}
 	errorHandler        func(error)
+	// Called when markets are removed, passes removed market slugs and current market data for final pricing
+	marketCloseHandler  func(removedMarkets []string, finalPrices map[string]*polymarket.MarketBook)
 	pollInterval        time.Duration
 	discoveryInterval   time.Duration
 	lastFetchTimestamp  map[string]int64
 	fetchMutex          sync.RWMutex
 	lastDiscoveryTime   time.Time
 	maxMarketAge        int64 // Maximum age of a market in seconds before it's considered expired
+	lastMarketWindow    int64 // Track which market window we're in for window change detection
 }
 
 // NewMarketFetcher creates a new market data fetcher
@@ -61,6 +63,7 @@ func NewMarketFetcher(client *polymarket.Client, cfg *config.PolymarketConfig) *
 		lastFetchTimestamp:  make(map[string]int64),
 		lastDiscoveryTime:   time.Now(),
 		maxMarketAge:        600, // Markets older than 10 minutes are considered expired (2 market cycles)
+		lastMarketWindow:    time.Now().Unix() / 300, // Initialize to current window
 		errorHandler: func(err error) {
 			// Default error handler - can be overridden
 			fmt.Printf("Market fetcher error: %v\n", err)
@@ -71,6 +74,11 @@ func NewMarketFetcher(client *polymarket.Client, cfg *config.PolymarketConfig) *
 // SetErrorHandler sets a custom error handler
 func (mf *MarketFetcher) SetErrorHandler(handler func(error)) {
 	mf.errorHandler = handler
+}
+
+// SetMarketCloseHandler sets a callback for when markets close/resolve
+func (mf *MarketFetcher) SetMarketCloseHandler(handler func(removedMarkets []string, finalPrices map[string]*polymarket.MarketBook)) {
+	mf.marketCloseHandler = handler
 }
 
 // Start begins polling market data
@@ -137,10 +145,26 @@ func (mf *MarketFetcher) discoverMarkets() {
 	// Remove all old markets that are not in the current discovery set
 	// This ensures we only keep the latest market window
 	removedMarkets := []string{}
+	finalPrices := make(map[string]*polymarket.MarketBook)
+	
 	for slug := range mf.marketMetadata {
 		if _, exists := fiveMinMarkets[slug]; !exists {
 			// Market is not in current discovery - it's old, remove it
 			removedMarkets = append(removedMarkets, slug)
+			
+			// Capture final prices for removed markets before deleting
+			// Get prices for both UP and DOWN outcomes
+			mf.cache.mu.RLock()
+			upKey := slug + "-UP"
+			downKey := slug + "-DOWN"
+			if book, exists := mf.cache.data[upKey]; exists {
+				finalPrices[upKey] = book
+			}
+			if book, exists := mf.cache.data[downKey]; exists {
+				finalPrices[downKey] = book
+			}
+			mf.cache.mu.RUnlock()
+			
 			delete(mf.marketMetadata, slug)
 			delete(mf.marketDiscoveryTime, slug)
 			
@@ -153,6 +177,11 @@ func (mf *MarketFetcher) discoverMarkets() {
 			}
 			mf.cache.mu.Unlock()
 		}
+	}
+
+	// Notify about market closures if handler is set
+	if len(removedMarkets) > 0 && mf.marketCloseHandler != nil {
+		mf.marketCloseHandler(removedMarkets, finalPrices)
 	}
 
 	// Add or update discovered markets

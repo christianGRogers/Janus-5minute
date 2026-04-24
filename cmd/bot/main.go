@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"janus-bot/config"
+	"janus-bot/pkg/analytics"
 	"janus-bot/pkg/market"
 	"janus-bot/pkg/polymarket"
+	"janus-bot/pkg/strategies"
 	"janus-bot/pkg/trading"
 )
 
@@ -36,7 +38,7 @@ func main() {
 	})
 
 	// Create trading engine
-	var tradingEngine interface{}
+	var tradingEngine *trading.PaperTradingEngine
 
 	if cfg.PaperTradingEnabled {
 		log.Println("Paper trading mode enabled")
@@ -46,6 +48,95 @@ func main() {
 		// TODO: Create live trading engine with real order placement
 		// tradingEngine = trading.NewLiveTrading(client, cfg)
 	}
+
+	// Create and initialize strategy
+	var strategy strategies.Strategy
+	if cfg.PaperTradingEnabled {
+		strategy = strategies.NewLateEntryStrategy(tradingEngine)
+		log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
+	}
+
+	// Create market logger for analytics
+	marketLogger, err := analytics.NewMarketLogger(".")
+	if err != nil {
+		log.Printf("⚠️  Warning: Failed to initialize market logger: %v\n", err)
+	} else {
+		log.Printf("📊 Market logs will be saved to: %s\n", marketLogger.GetLogDirectory())
+		defer marketLogger.Close()
+	}
+
+	// Set market close handler to resolve positions when markets transition
+	fetcher.SetMarketCloseHandler(func(removedMarkets []string, finalPrices map[string]*polymarket.MarketBook) {
+		if tradingEngine != nil {
+			log.Printf("\n📍 Market Window Ended - Closing %d positions:\n", len(removedMarkets))
+			totalPnL := 0.0
+			for _, marketID := range removedMarkets {
+				// Determine which outcome won based on final prices
+				// At resolution: winning outcome ≈ 0.99 ($1), losing outcome ≈ 0.01 ($0)
+				upKey := marketID + "-UP"
+				downKey := marketID + "-DOWN"
+				
+				var upFinalPrice float64 = 0.50  // Default fallback
+				var downFinalPrice float64 = 0.50 // Default fallback
+				
+				if upBook, exists := finalPrices[upKey]; exists && upBook != nil {
+					upFinalPrice = upBook.BestBidParsed
+				}
+				if downBook, exists := finalPrices[downKey]; exists && downBook != nil {
+					downFinalPrice = downBook.BestBidParsed
+				}
+				
+				// Determine which outcome won: the one trading near 0.99
+				var exitPrice float64
+				var winningOutcome string
+				if upFinalPrice > downFinalPrice {
+					// UP won (≈0.99, worth $1)
+					exitPrice = 1.0
+					winningOutcome = "UP"
+				} else {
+					// DOWN won (≈0.99, worth $1), UP is worth $0
+					exitPrice = 0.0
+					winningOutcome = "DOWN"
+				}
+				
+				// Close position at the resolved value
+				closedPositions := tradingEngine.CloseMarketPositions(marketID, exitPrice)
+				for _, pos := range closedPositions {
+					status := "📈"
+					if pos.NetProfitLoss < 0 {
+						status = "📉"
+					}
+					outcome := "correct ✅"
+					if (pos.Outcome == "UP" && winningOutcome != "UP") || (pos.Outcome == "DOWN" && winningOutcome != "DOWN") {
+						outcome = "lost ❌"
+					}
+					fmt.Printf("%s Market %s (%s) %s: Entry %.2f → Exit %.2f | Gross: $%.2f | Fees: $%.2f | Net P&L: $%.2f (%.1f%%)\n",
+						status, pos.MarketID, pos.Outcome, outcome, pos.EntryPrice, pos.ExitPrice, pos.ProfitLoss, pos.EntryFee+pos.ExitFee, pos.NetProfitLoss, pos.ProfitPct)
+					totalPnL += pos.NetProfitLoss
+				}
+
+				// Log market closure to analytics
+				if marketLogger != nil && len(closedPositions) > 0 {
+					if err := marketLogger.LogMarketClosure(
+						marketID,
+						closedPositions,
+						finalPrices,
+						tradingEngine.GetBalance(),
+						tradingEngine.GetCumulativeProfit(),
+					); err != nil {
+						log.Printf("⚠️  Failed to log market closure: %v\n", err)
+					}
+				}
+			}
+			if totalPnL != 0 {
+				fmt.Printf("\n💰 Total Window P&L (after fees): $%.2f\n", totalPnL)
+			}
+			// Notify strategy of window change
+			if strategy != nil {
+				strategy.OnMarketWindowChange()
+			}
+		}
+	})
 
 	// Start fetching market data
 	fetcher.Start()
@@ -102,17 +193,32 @@ func main() {
 				}
 			}
 
+			// Run strategy evaluation if enabled
+			if strategy != nil && len(books) > 0 {
+				shouldTrade, marketID, side, price, size := strategy.Evaluate(books)
+				if shouldTrade {
+					// Place order with simulated delay using the market ID from the strategy
+					orderID, err := tradingEngine.PlaceOrderWithDelay(marketID, side, price, size)
+					if err != nil {
+						log.Printf("❌ Strategy order failed: %v", err)
+					} else {
+						log.Printf("✅ %s Strategy placed %s order: %s @ %.2f x %.0f shares", strategy.Name(), side, orderID, price, size)
+					}
+				}
+			}
+
 			// Show paper trading
-			if pt, ok := tradingEngine.(*trading.PaperTradingEngine); ok {
+			if tradingEngine != nil {
 				fmt.Printf("\nPaper Trading Account:\n")
-				fmt.Printf("  Balance: %.2f USDC\n", pt.GetBalance())
-				positions := pt.GetPositions()
+				fmt.Printf("  Balance: %.2f USDC\n", tradingEngine.GetBalance())
+				fmt.Printf("  Profit: %.2f USDC\n", tradingEngine.GetCumulativeProfit())
+				positions := tradingEngine.GetPositions()
 				if len(positions) == 0 {
 					fmt.Printf("  Positions: None\n")
 				} else {
 					fmt.Printf("  Positions:\n")
 					for marketID, pos := range positions {
-						fmt.Printf("    %s: %s %.2f @ %.4f\n", marketID, pos.Side, pos.Size, pos.AvgPrice)
+						fmt.Printf("    %s (%s): %s %.2f @ %.4f\n", marketID, pos.Direction, pos.Side, pos.Size, pos.AvgPrice)
 					}
 				}
 			}
