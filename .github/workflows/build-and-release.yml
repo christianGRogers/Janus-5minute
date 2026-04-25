@@ -1,0 +1,147 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.2'
+
+      - name: Download dependencies
+        run: go mod download && go mod tidy
+
+      - name: Build executable
+        run: go build -o janus-bot ./cmd/bot
+
+      - name: Create .env file for executable
+        run: |
+          cat > .env.example << 'EOF'
+          # Polymarket API Configuration
+          POLYMARKET_API_KEY=your_api_key_here
+          POLYMARKET_PRIVATE_KEY=your_private_key_here
+          
+          # Market Configuration
+          MARKET_FETCH_INTERVAL_MS=5000
+          
+          # Trading Configuration
+          PAPER_TRADING_ENABLED=true
+          EOF
+          
+          # Create the actual .env file with secrets from GitHub
+          cat > janus-bot.env << 'EOF'
+          POLYMARKET_API_KEY=${{ secrets.POLYMARKET_API_KEY }}
+          POLYMARKET_PRIVATE_KEY=${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          MARKET_FETCH_INTERVAL_MS=${{ secrets.MARKET_FETCH_INTERVAL_MS || '5000' }}
+          PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'true' }}
+          EOF
+
+      - name: Create startup script (Linux/Mac)
+        run: |
+          cat > start-janus-bot.sh << 'EOF'
+          #!/bin/bash
+          # Load environment variables from .env file if it exists
+          if [ -f "./janus-bot.env" ]; then
+              export $(cat janus-bot.env | xargs)
+          fi
+          
+          # Run the bot
+          ./janus-bot
+          EOF
+          chmod +x start-janus-bot.sh
+
+      - name: Create startup script (Windows)
+        run: |
+          cat > start-janus-bot.ps1 << 'EOF'
+          # Load environment variables from .env file if it exists
+          if (Test-Path "./janus-bot.env") {
+              $envVars = Get-Content "./janus-bot.env" | Where-Object { $_ -and -not $_.StartsWith('#') }
+              foreach ($line in $envVars) {
+                  $key, $value = $line -split '=', 2
+                  [Environment]::SetEnvironmentVariable($key.Trim(), $value.Trim(), "Process")
+              }
+          }
+          
+          # Run the bot
+          .\janus-bot.exe
+          EOF
+
+      - name: Create release artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp janus-bot release-artifacts/
+          cp start-janus-bot.sh release-artifacts/
+          cp start-janus-bot.ps1 release-artifacts/
+          cp .env.example release-artifacts/
+          cp README.md release-artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}-${{ github.sha }}
+          name: Release v${{ github.run_number }}
+          draft: false
+          prerelease: false
+          files: |
+            release-artifacts/janus-bot
+            release-artifacts/start-janus-bot.sh
+            release-artifacts/start-janus-bot.ps1
+            release-artifacts/.env.example
+            release-artifacts/README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: janus-bot-build
+          path: release-artifacts/
+          retention-days: 30
+
+  build-cross-platform:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux, darwin, windows]
+        arch: [amd64, arm64]
+        exclude:
+          # Darwin (macOS) doesn't support ARM64 on AMD64 runners for cross-compilation easily
+          # Windows ARM64 is less common, exclude for now
+          - os: windows
+            arch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.2'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build for ${{ matrix.os }}/${{ matrix.arch }}
+        run: |
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o janus-bot-${{ matrix.os }}-${{ matrix.arch }} ./cmd/bot
+        env:
+          CGO_ENABLED: 0
+
+      - name: Upload cross-platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: janus-bot-${{ matrix.os }}-${{ matrix.arch }}
+          path: janus-bot-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 30
