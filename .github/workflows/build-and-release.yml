@@ -6,9 +6,16 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     
     steps:
       - name: Checkout code
@@ -87,20 +94,15 @@ jobs:
           cp README.md release-artifacts/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: v${{ github.run_number }}-${{ github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: v${{ github.run_number }}-${{ github.sha }}
           name: Release v${{ github.run_number }}
           draft: false
           prerelease: false
-          files: |
-            release-artifacts/janus-bot
-            release-artifacts/start-janus-bot.sh
-            release-artifacts/start-janus-bot.ps1
-            release-artifacts/.env.example
-            release-artifacts/README.md
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "release-artifacts/janus-bot,release-artifacts/start-janus-bot.sh,release-artifacts/start-janus-bot.ps1,release-artifacts/.env.example,release-artifacts/README.md"
+          artifactErrorsFailBuild: false
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -111,6 +113,8 @@ jobs:
 
   build-cross-platform:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       matrix:
         os: [linux, darwin, windows]
