@@ -113,11 +113,22 @@ go run ./cmd/bot
 
 ### Trading Flow (Paper Trading)
 
-1. Strategy calls `PlaceOrder()` on paper trading engine
-2. Engine validates balance and position limits
-3. Trade is recorded with full accounting
+1. Strategy calls `EvaluateV2()` returning market and liquidity data
+2. Engine applies realistic execution modeling:
+   - **Slippage** based on liquidity taken (0.5 bps per 1% by default)
+   - **Latency** simulation (100-500ms delays)
+   - **Price staleness** from polling intervals (up to 50 bps movement)
+3. Trade is recorded with realistic execution price
 4. Position is updated or created
-5. Trade history and ROI calculations available
+5. Trade history includes fees (Polymarket formula: C × 0.072020 × p × (1-p))
+
+**Realism Features:**
+- Execution prices reflect real market impact
+- Timestamps include network/exchange delays
+- Backtests typically 10-30% more conservative than unrealistic simulations
+- Configurable per `config.PaperTradingRealistic`
+
+See [PAPER_TRADING_REALISM.md](./PAPER_TRADING_REALISM.md) for detailed documentation on realism features.
 
 ## Adding Strategies
 

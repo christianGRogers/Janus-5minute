@@ -42,7 +42,20 @@ func main() {
 
 	if cfg.PaperTradingEnabled {
 		log.Println("Paper trading mode enabled")
-		tradingEngine = trading.NewPaperTradingEngine(10000.0) // Start with 10,000 USDC
+		log.Println("📊 Paper Trading Realism Features:")
+		log.Printf("  • Slippage modeling: %v\n", cfg.PaperTradingRealistic.EnableSlippage)
+		log.Printf("  • Latency simulation: %v\n", cfg.PaperTradingRealistic.EnableLatency)
+		log.Printf("  • Price staleness: %v\n", cfg.PaperTradingRealistic.EnablePriceStaleness)
+		
+		// Create realistic config from app config
+		realisticCfg := &trading.RealisticExecutionConfig{
+			EnableSlippage:        cfg.PaperTradingRealistic.EnableSlippage,
+			SlippageFactorPercent: cfg.PaperTradingRealistic.SlippageFactorPercent,
+			EnableLatency:         cfg.PaperTradingRealistic.EnableLatency,
+			EnablePriceStaleness:  cfg.PaperTradingRealistic.EnablePriceStaleness,
+			MaxPriceStalenessBps:  cfg.PaperTradingRealistic.MaxPriceStalenessBps,
+		}
+		tradingEngine = trading.NewPaperTradingEngineWithConfig(10000.0, realisticCfg) // Start with 10,000 USDC
 	} else {
 		log.Println("Live trading mode enabled")
 		// TODO: Create live trading engine with real order placement
@@ -195,14 +208,14 @@ func main() {
 
 			// Run strategy evaluation if enabled
 			if strategy != nil && len(books) > 0 {
-				shouldTrade, marketID, side, price, size := strategy.Evaluate(books)
-				if shouldTrade {
-					// Place order with simulated delay using the market ID from the strategy
-					orderID, err := tradingEngine.PlaceOrderWithDelay(marketID, side, price, size)
+				signal := strategy.EvaluateV2(books)
+				if signal.ShouldTrade {
+					// Place order with metadata for slippage calculation
+					orderID, err := tradingEngine.PlaceOrderWithMetadata(signal.MarketID, signal.Side, signal.Price, signal.Size, signal.AvailableLiquidity)
 					if err != nil {
 						log.Printf("❌ Strategy order failed: %v", err)
 					} else {
-						log.Printf("✅ %s Strategy placed %s order: %s @ %.2f x %.0f shares", strategy.Name(), side, orderID, price, size)
+						log.Printf("✅ %s Strategy placed %s order: %s @ %.2f x %.0f shares", strategy.Name(), signal.Side, orderID, signal.Price, signal.Size)
 					}
 				}
 			}

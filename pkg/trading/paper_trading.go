@@ -2,6 +2,8 @@ package trading
 
 import (
 	"fmt"
+	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -9,6 +11,37 @@ import (
 // Polymarket taker fee formula: fee = C × 0.072020 × p × (1 - p)
 // where C is the size (number of shares), p is the price
 const TAKER_FEE_COEFFICIENT = 0.072020
+
+// RealisticExecutionConfig controls realism features for paper trading
+type RealisticExecutionConfig struct {
+	EnableSlippage        bool    // Model price impact from liquidity taken
+	EnableLatency         bool    // Add network/execution delays
+	EnablePriceStaleness  bool    // Model price gaps between poll intervals
+	SlippageFactorPercent float64 // How much slippage per % of liquidity taken (default: 0.5)
+	MaxPriceStalenessBps  float64 // Max basis points price can move between polls (default: 50)
+}
+
+// DefaultRealisticConfig returns recommended realistic settings
+func DefaultRealisticConfig() *RealisticExecutionConfig {
+	return &RealisticExecutionConfig{
+		EnableSlippage:        true,
+		EnableLatency:         true,
+		EnablePriceStaleness:  true,
+		SlippageFactorPercent: 0.5,  // 0.5bps slippage per 1% of liquidity
+		MaxPriceStalenessBps:  50,   // Price can move up to 50bps between polls
+	}
+}
+
+// NoRealisticConfig returns settings with all realism features disabled (original behavior)
+func NoRealisticConfig() *RealisticExecutionConfig {
+	return &RealisticExecutionConfig{
+		EnableSlippage:        false,
+		EnableLatency:         false,
+		EnablePriceStaleness:  false,
+		SlippageFactorPercent: 0,
+		MaxPriceStalenessBps:  0,
+	}
+}
 
 // PaperTrade represents a simulated trade
 type PaperTrade struct {
@@ -61,6 +94,8 @@ type PaperTradingEngine struct {
 	tradeHistory    []*PaperTrade
 	orderIDCounter  int64
 	startingBalance float64
+	realisticConfig *RealisticExecutionConfig
+	lastPrices      map[string]float64 // Track last known prices for staleness simulation
 }
 
 // calculateTakerFee calculates the taker fee using Polymarket formula
@@ -80,16 +115,122 @@ func NewPaperTradingEngine(startingBalance float64) *PaperTradingEngine {
 		trades:          make(map[string]*PaperTrade),
 		tradeHistory:    make([]*PaperTrade, 0),
 		orderIDCounter:  1000,
+		realisticConfig: DefaultRealisticConfig(),
+		lastPrices:      make(map[string]float64),
 	}
+}
+
+// NewPaperTradingEngineWithConfig creates a new paper trading engine with custom realism settings
+func NewPaperTradingEngineWithConfig(startingBalance float64, cfg *RealisticExecutionConfig) *PaperTradingEngine {
+	engine := NewPaperTradingEngine(startingBalance)
+	if cfg != nil {
+		engine.realisticConfig = cfg
+	}
+	return engine
+}
+
+// SetRealisticConfig updates the realism configuration at runtime
+func (p *PaperTradingEngine) SetRealisticConfig(cfg *RealisticExecutionConfig) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if cfg != nil {
+		p.realisticConfig = cfg
+	}
+}
+
+// calculateSlippage models price impact from taking liquidity
+// Larger orders get worse prices as they walk up the order book
+func (p *PaperTradingEngine) calculateSlippage(side string, quotedPrice float64, size float64, availableLiquidity float64) float64 {
+	if !p.realisticConfig.EnableSlippage || availableLiquidity <= 0 {
+		return quotedPrice
+	}
+
+	// Calculate what % of available liquidity we're taking
+	liquidityPercent := (size / availableLiquidity) * 100.0
+	
+	// Cap at reasonable maximum (taking more than 100% means order book walking a lot)
+	if liquidityPercent > 100 {
+		liquidityPercent = 100
+	}
+
+	// Slippage increases with liquidity taken
+	// Factor: 0.5% per 1% of liquidity = 0.005 * liquidityPercent basis points
+	slippageBps := p.realisticConfig.SlippageFactorPercent * liquidityPercent
+	slippagePercent := slippageBps / 10000.0
+
+	if side == "BUY" {
+		// Buying is more expensive (walk up bid side)
+		return quotedPrice * (1 + slippagePercent)
+	} else {
+		// Selling is less profitable (walk down ask side)
+		return quotedPrice * (1 - slippagePercent)
+	}
+}
+
+// calculatePriceStaleness models that price might move between poll intervals
+// Simulates the risk that by the time you execute, price has already moved
+func (p *PaperTradingEngine) calculatePriceStaleness(marketID string, currentPrice float64) float64 {
+	if !p.realisticConfig.EnablePriceStaleness {
+		return currentPrice
+	}
+
+	lastPrice, exists := p.lastPrices[marketID]
+	if !exists {
+		p.lastPrices[marketID] = currentPrice
+		return currentPrice
+	}
+
+	// Random walk: price might have moved since last update
+	// Max movement: MaxPriceStalenessBps basis points
+	maxMovement := currentPrice * (p.realisticConfig.MaxPriceStalenessBps / 10000.0)
+	
+	// Random movement between -maxMovement and +maxMovement
+	// 60% chance closer to current price, 40% chance at extremes (models volatility)
+	movement := (rand.Float64()*2 - 1) * maxMovement
+	
+	stalledPrice := currentPrice + movement
+	
+	// Ensure price stays reasonable (between last price and current price)
+	if stalledPrice < math.Min(lastPrice, currentPrice) {
+		stalledPrice = math.Min(lastPrice, currentPrice)
+	}
+	if stalledPrice > math.Max(lastPrice, currentPrice) {
+		stalledPrice = math.Max(lastPrice, currentPrice)
+	}
+
+	p.lastPrices[marketID] = currentPrice
+	return stalledPrice
 }
 
 // PlaceOrder simulates placing an order
 func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price float64, size float64) (string, error) {
+	return p.PlaceOrderWithMetadata(marketID, side, price, size, 0)
+}
+
+// PlaceOrderWithMetadata places an order with optional available liquidity metadata for slippage calculation
+func (p *PaperTradingEngine) PlaceOrderWithMetadata(marketID string, side string, price float64, size float64, availableLiquidity float64) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Apply realism features
+	executionPrice := price
+	
+	// 1. Apply price staleness (what was the actual price when executing?)
+	executionPrice = p.calculatePriceStaleness(marketID, executionPrice)
+	
+	// 2. Apply slippage (worse fill due to liquidity impact)
+	if availableLiquidity > 0 {
+		executionPrice = p.calculateSlippage(side, executionPrice, size, availableLiquidity)
+	}
+	
+	// 3. Apply latency (simulate network delay)
+	if p.realisticConfig.EnableLatency {
+		delay := time.Duration(100 + (time.Now().UnixNano() % 400)) * time.Millisecond
+		time.Sleep(delay)
+	}
+
 	// Check if we have sufficient balance for a buy order
-	requiredBalance := price * size
+	requiredBalance := executionPrice * size
 	if side == "BUY" && requiredBalance > p.balance {
 		return "", fmt.Errorf("insufficient balance: required %.2f USDC, have %.2f USDC", requiredBalance, p.balance)
 	}
@@ -101,7 +242,7 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 		OrderID:    orderID,
 		MarketID:   marketID,
 		Side:       side,
-		Price:      price,
+		Price:      executionPrice,
 		Size:       size,
 		Status:     "FILLED",
 		FilledSize: size,
@@ -129,7 +270,7 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 	if pos, exists := p.positions[posKey]; exists {
 		if pos.Side == side {
 			// Increase position
-			totalCost := pos.AvgPrice*pos.Size + price*size
+			totalCost := pos.AvgPrice*pos.Size + executionPrice*size
 			pos.Size += size
 			pos.AvgPrice = totalCost / pos.Size
 		} else {
@@ -140,16 +281,16 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 					MarketID:   marketID,
 					Outcome:    pos.Direction,
 					EntryPrice: pos.AvgPrice,
-					ExitPrice:  price,
+					ExitPrice:  executionPrice,
 					Size:       size,
 					EntryTime:  pos.EntryTime,
 					ExitTime:   time.Now().Unix(),
 				}
 				// Calculate P&L
 				if pos.Side == "BUY" {
-					closedPos.ProfitLoss = (price - pos.AvgPrice) * size
+					closedPos.ProfitLoss = (executionPrice - pos.AvgPrice) * size
 				} else {
-					closedPos.ProfitLoss = (pos.AvgPrice - price) * size
+					closedPos.ProfitLoss = (pos.AvgPrice - executionPrice) * size
 				}
 				closedPos.ProfitPct = (closedPos.ProfitLoss / (pos.AvgPrice * size)) * 100
 				p.closedPositions = append(p.closedPositions, closedPos)
@@ -166,15 +307,15 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 					MarketID:   marketID,
 					Outcome:    pos.Direction,
 					EntryPrice: pos.AvgPrice,
-					ExitPrice:  price,
+					ExitPrice:  executionPrice,
 					Size:       pos.Size,
 					EntryTime:  pos.EntryTime,
 					ExitTime:   time.Now().Unix(),
 				}
 				if pos.Side == "BUY" {
-					closedPos.ProfitLoss = (price - pos.AvgPrice) * pos.Size
+					closedPos.ProfitLoss = (executionPrice - pos.AvgPrice) * pos.Size
 				} else {
-					closedPos.ProfitLoss = (pos.AvgPrice - price) * pos.Size
+					closedPos.ProfitLoss = (pos.AvgPrice - executionPrice) * pos.Size
 				}
 				closedPos.ProfitPct = (closedPos.ProfitLoss / (pos.AvgPrice * pos.Size)) * 100
 				p.closedPositions = append(p.closedPositions, closedPos)
@@ -186,7 +327,7 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 					Side:      side,
 					Direction: direction,
 					Size:      remainingSize,
-					AvgPrice:  price,
+					AvgPrice:  executionPrice,
 					EntryTime: time.Now().Unix(),
 				}
 			}
@@ -198,7 +339,7 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 			Side:      side,
 			Direction: direction,
 			Size:      size,
-			AvgPrice:  price,
+			AvgPrice:  executionPrice,
 			EntryTime: time.Now().Unix(),
 		}
 	}
@@ -206,14 +347,9 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 	return orderID, nil
 }
 
-// PlaceOrderWithDelay simulates placing an order with realistic network/execution delay
-// Delay ranges from 100-500ms to simulate real-world conditions
+// PlaceOrderWithDelay is deprecated - use PlaceOrderWithMetadata with realistic config instead
+// This method is kept for backwards compatibility
 func (p *PaperTradingEngine) PlaceOrderWithDelay(marketID string, side string, price float64, size float64) (string, error) {
-	// Simulate realistic order execution delay
-	// Typical exchange response times: 100-500ms
-	delay := time.Duration(100 + (time.Now().UnixNano() % 400)) * time.Millisecond
-	time.Sleep(delay)
-	
 	return p.PlaceOrder(marketID, side, price, size)
 }
 

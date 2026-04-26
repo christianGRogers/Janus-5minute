@@ -1,5 +1,30 @@
 package config
 
+// PaperTradingRealisticConfig controls realism features for paper trading simulations
+type PaperTradingRealisticConfig struct {
+	// Slippage modeling: price impact from taking liquidity
+	EnableSlippage        bool    // Model price impact from liquidity taken (default: true)
+	SlippageFactorPercent float64 // Slippage per % of liquidity taken in basis points (default: 0.5)
+	
+	// Latency modeling: network/execution delays
+	EnableLatency bool // Add realistic 100-500ms execution delays (default: true)
+	
+	// Price staleness: models price gaps between poll intervals
+	EnablePriceStaleness bool    // Model price movement between polls (default: true)
+	MaxPriceStalenessBps float64 // Max basis points price can move between polls (default: 50)
+}
+
+// DefaultPaperTradingRealistic returns recommended realistic settings for paper trading
+func DefaultPaperTradingRealistic() *PaperTradingRealisticConfig {
+	return &PaperTradingRealisticConfig{
+		EnableSlippage:        true,
+		SlippageFactorPercent: 0.5,
+		EnableLatency:         true,
+		EnablePriceStaleness:  true,
+		MaxPriceStalenessBps:  50,
+	}
+}
+
 // PolymarketConfig holds static variables for Polymarket API configuration
 type PolymarketConfig struct {
 	// API Configuration
@@ -14,6 +39,9 @@ type PolymarketConfig struct {
 	PaperTradingEnabled bool
 	OrderGasLimit       uint64
 	OrderChainID        uint64
+
+	// Paper Trading Realism
+	PaperTradingRealistic *PaperTradingRealisticConfig
 
 	// Polling Configuration
 	PollIntervalSeconds int
@@ -39,6 +67,7 @@ func DefaultConfig() *PolymarketConfig {
 		OrderGasLimit:       500000,
 		OrderChainID:        137, // Polygon mainnet
 		PollIntervalSeconds: 1,
+		PaperTradingRealistic: DefaultPaperTradingRealistic(),
 		Markets: []MarketConfig{
 			{
 				MarketID:           "polymarket-btc-updown-5m-1776809400",
