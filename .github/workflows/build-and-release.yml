@@ -95,15 +95,31 @@ jobs:
 
       - name: Create release artifacts
         run: |
+          set -e  # Exit on any error
           mkdir -p release-artifacts
-          cp janus-bot release-artifacts/
-          cp start-janus-bot.sh release-artifacts/
-          cp start-janus-bot.ps1 release-artifacts/
-          cp .env.example release-artifacts/
-          cp README.md release-artifacts/
           
+          echo "Copying janus-bot..."
+          cp janus-bot release-artifacts/ || { echo "Failed to copy janus-bot"; exit 1; }
+          
+          echo "Copying start-janus-bot.sh..."
+          cp start-janus-bot.sh release-artifacts/ || { echo "Failed to copy start-janus-bot.sh"; exit 1; }
+          
+          echo "Copying start-janus-bot.ps1..."
+          cp start-janus-bot.ps1 release-artifacts/ || { echo "Failed to copy start-janus-bot.ps1"; exit 1; }
+          
+          echo "Copying .env.example..."
+          cp .env.example release-artifacts/ || { echo "Failed to copy .env.example"; exit 1; }
+          
+          echo "Copying README.md..."
+          cp README.md release-artifacts/ || { echo "Failed to copy README.md"; exit 1; }
+          
+          echo ""
           echo "=== Verifying artifact contents ==="
           ls -la release-artifacts/
+          
+          echo ""
+          echo "Verifying .env.example in artifacts:"
+          file release-artifacts/.env.example
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
