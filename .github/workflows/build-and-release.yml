@@ -174,3 +174,119 @@ jobs:
           name: janus-bot-${{ matrix.os }}-${{ matrix.arch }}
           path: janus-bot-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 30
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: janus-bot-build
+          path: ./release-artifacts
+
+      - name: Verify downloaded artifacts
+        run: |
+          echo "=== Files in current directory ==="
+          ls -la
+          echo ""
+          echo "=== Files in release-artifacts ==="
+          ls -la release-artifacts/
+          echo ""
+          if [ -f "release-artifacts/.env.example" ]; then
+            echo ".env.example found in release-artifacts"
+            head -3 release-artifacts/.env.example
+          else
+            echo "ERROR: .env.example NOT FOUND in release-artifacts"
+            exit 1
+          fi
+
+      - name: Install SSH client and sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client sshpass
+
+      - name: Create bot directory on server
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "mkdir -p ~/janus-bot"
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
+      - name: Upload bot binary to server
+        run: |
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no -P $SSH_PORT release-artifacts/janus-bot $SSH_USERNAME@$SSH_HOST:~/janus-bot/janus-bot
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
+      - name: Upload startup scripts to server
+        run: |
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no -P $SSH_PORT release-artifacts/start-janus-bot.sh $SSH_USERNAME@$SSH_HOST:~/janus-bot/start-janus-bot.sh
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
+      - name: Make startup script executable
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "chmod +x ~/janus-bot/start-janus-bot.sh"
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
+      - name: Create .env file on server with secrets
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST << 'SSH_SCRIPT'
+          cat > ~/janus-bot/.env << 'EOF'
+          POLYMARKET_API_KEY=${{ secrets.POLYMARKET_API_KEY }}
+          POLYMARKET_PRIVATE_KEY=${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          MARKET_FETCH_INTERVAL_MS=${{ secrets.MARKET_FETCH_INTERVAL_MS || '5000' }}
+          PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'true' }}
+          EOF
+          SSH_SCRIPT
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
+      - name: Kill existing bot screen session (if running)
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "screen -S janus-bot -X quit 2>/dev/null || true"
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
+      - name: Start bot in screen session
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "cd ~/janus-bot && screen -d -m -S janus-bot ./start-janus-bot.sh"
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+
+      - name: Verify deployment
+        run: |
+          sleep 2
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "screen -S janus-bot -X hardcopy -h ~/janus-bot/screen.log && head -20 ~/janus-bot/screen.log"
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
