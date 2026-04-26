@@ -54,8 +54,15 @@ func (les *LateEntryStrategy) Name() string {
 // 5. SELL only when UP price is 0.25- (avoid medium confidence shorts which lose)
 // 6. In final seconds: Buy/Sell aggressively at extreme confidence (0.98+)
 func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook) (bool, string, string, float64, float64) {
+	// Calculate the ACTUAL 5-minute market window based on current time
+	// Markets are in 300-second (5-minute) windows: 0:00-4:59, 5:00-9:59, etc.
+	now := time.Now()
+	currentWindowNumber := now.Unix() / 300      // Which 5-minute window are we in?
+	windowStartUnix := currentWindowNumber * 300  // Timestamp of this window's start
+	windowStartTime := time.Unix(windowStartUnix, 0)
+	
 	// Calculate time remaining in the 5-minute window
-	timeSinceWindowStart := time.Since(les.windowStartTime)
+	timeSinceWindowStart := now.Sub(windowStartTime)
 	secondsIntoWindow := int(timeSinceWindowStart.Seconds())
 	secondsRemaining := 300 - secondsIntoWindow // 5 minutes = 300 seconds
 
