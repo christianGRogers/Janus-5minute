@@ -107,15 +107,29 @@ jobs:
 
       - name: Create release artifacts
         run: |
+          set +e  # Don't exit on error
           mkdir -p release-artifacts
-          cp janus-bot release-artifacts/
-          cp start-janus-bot.sh release-artifacts/
-          cp start-janus-bot.ps1 release-artifacts/
-          cp .env.example release-artifacts/
-          cp README.md release-artifacts/
           
+          echo "Step 1: Copying janus-bot"
+          cp janus-bot release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
+          
+          echo "Step 2: Copying start-janus-bot.sh"
+          cp start-janus-bot.sh release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
+          
+          echo "Step 3: Copying start-janus-bot.ps1"
+          cp start-janus-bot.ps1 release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
+          
+          echo "Step 4: Copying .env.example"
+          cp .env.example release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
+          
+          echo "Step 5: Copying README.md"
+          cp README.md release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
+          
+          echo ""
           echo "=== Contents of release-artifacts after copy ==="
           ls -la release-artifacts/
+          
+          set -e  # Turn error checking back on
 
       - name: Verify .env.example in artifacts
         run: |
