@@ -147,13 +147,50 @@ func (s *YourStrategy) Run() {
 - **Lock contention** minimized with RWMutex for read-heavy operations
 - Typical latency: < 100ms from API to strategy signal
 
+## Performance Analysis & Visualization
+
+The bot includes a comprehensive Python-based visualization tool that generates detailed performance analytics from trading logs.
+
+### Available Charts
+
+| Chart | Description |
+|-------|-------------|
+| [📈 Profit Timeline](./tools/VISUALIZATION_QUICKSTART.md#01-profit-timeline) | Cumulative profit over time with trade markers showing wins (green) and losses (red) |
+| [🎯 Win Rate Analysis](./tools/VISUALIZATION_QUICKSTART.md#02-win-rate-analysis) | Win/loss distribution, cumulative win rate, and trading frequency breakdown |
+| [💰 Price Analysis](./tools/VISUALIZATION_QUICKSTART.md#03-price-analysis) | Entry/exit price distributions for UP and DOWN positions with statistical overlays |
+| [💸 Fee Analysis](./tools/VISUALIZATION_QUICKSTART.md#04-fee-analysis) | Fee patterns by trade type and cumulative fee impact on profitability |
+| [📊 Account Balance](./tools/VISUALIZATION_QUICKSTART.md#05-account-balance) | Account balance progression starting from $10,000 with drawdown analysis |
+| [📋 Summary Statistics](./tools/VISUALIZATION_QUICKSTART.md#06-summary-statistics) | Key metrics: total trades, win rate, ROI, hours traded, fees, and P&L breakdown |
+
+### Quick Start
+
+Generate visualization charts from trading logs:
+
+```bash
+python tools/visualize_performance.py logs/markets/YOUR_LOG/market_performance.csv --output charts
+```
+
+For detailed setup and usage:
+- **Quick Start**: See [`tools/VISUALIZATION_QUICKSTART.md`](./tools/VISUALIZATION_QUICKSTART.md)
+- **Full Guide**: See [`tools/README.md`](./tools/README.md)
+- **Quick Reference**: See [`tools/QUICK_REFERENCE.py`](./tools/QUICK_REFERENCE.py)
+
+### Requirements
+
+Python 3.8+ with dependencies specified in `tools/requirements-analysis.txt`:
+- matplotlib ≥ 3.6 (charting)
+- seaborn ≥ 0.12 (statistical visualization)
+- pandas ≥ 1.5 (data manipulation)
+- numpy < 2.0 (numerical computing)
+
 ## Next Steps
 
 1. Add your Polymarket market IDs to `config/variables.go`
 2. Set environment variables with API credentials
 3. Test with paper trading
 4. Implement trading strategy in new strategy file
-5. Deploy to production when ready
+5. Monitor performance with visualization tools (see Performance Analysis section above)
+6. Deploy to production when ready
 
 ## Troubleshooting
 

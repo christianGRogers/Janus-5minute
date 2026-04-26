@@ -87,6 +87,11 @@ class BotPerformanceVisualizer:
 
     def _prepare_data(self):
         """Prepare data for visualization."""
+        # Calculate accurate balance: starting balance (10000) + cumulative profit
+        starting_balance = 10000.0
+        self.df["calculated_balance"] = starting_balance + self.df["cumulative_profit_usdc"]
+        self.starting_balance = starting_balance
+        
         self.df["profit_color"] = self.df["net_profit_usdc"].apply(
             lambda x: "green" if x > 0 else "red"
         )
@@ -355,34 +360,33 @@ class BotPerformanceVisualizer:
         self._save_figure("04_fee_analysis.png", fig)
 
     def plot_account_balance(self):
-        """Plot account balance over time."""
+        """Plot account balance over time (calculated from starting balance + cumulative profit)."""
         fig, ax = plt.subplots(figsize=(14, 6))
 
         ax.plot(
             self.df["timestamp"],
-            self.df["account_balance_usdc"],
+            self.df["calculated_balance"],
             marker="o",
             linewidth=2.5,
             markersize=7,
             color="darkblue",
-            label="Account Balance",
+            label="Account Balance (10000 + Cumulative Profit)",
         )
         
         # Add starting balance line
-        start_balance = self.df["account_balance_usdc"].iloc[0]
         ax.axhline(
-            y=start_balance,
+            y=self.starting_balance,
             color="gray",
             linestyle="--",
             linewidth=1,
             alpha=0.7,
-            label=f"Starting Balance: ${start_balance:.2f}",
+            label=f"Starting Balance: ${self.starting_balance:,.2f}",
         )
 
         ax.fill_between(
             self.df["timestamp"],
-            self.df["account_balance_usdc"],
-            start_balance,
+            self.df["calculated_balance"],
+            self.starting_balance,
             alpha=0.2,
             color="darkblue",
         )
@@ -413,9 +417,14 @@ class BotPerformanceVisualizer:
         total_fees = self.df["total_fees_usdc"].sum()
         avg_trade_profit = total_profit / total_trades if total_trades > 0 else 0
         
-        starting_balance = self.df["account_balance_usdc"].iloc[0]
-        final_balance = self.df["account_balance_usdc"].iloc[-1]
+        # Use fixed starting balance of 10000
+        starting_balance = self.starting_balance
+        final_balance = self.df["calculated_balance"].iloc[-1]
         roi = ((final_balance - starting_balance) / starting_balance * 100)
+        
+        # Calculate hours traded
+        time_range = self.df["timestamp"].max() - self.df["timestamp"].min()
+        hours_traded = time_range.total_seconds() / 3600
 
         stats_text = f"""
         📊 TRADING PERFORMANCE SUMMARY
@@ -434,6 +443,9 @@ class BotPerformanceVisualizer:
         Starting Balance: ${starting_balance:,.2f}
         Final Balance: ${final_balance:,.2f}
         ROI: {roi:.2f}%
+        
+        {'='*50}
+        Hours Traded: {hours_traded:.1f} hours
         
         {'='*50}
         """
