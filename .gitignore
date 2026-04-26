@@ -1,4 +1,5 @@
 *.csv
 *.jsonl
 .env
+!.env.example
 *.exe
