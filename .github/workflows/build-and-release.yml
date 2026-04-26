@@ -46,13 +46,8 @@ jobs:
           PAPER_TRADING_ENABLED=true
           EOF
           
-          # Create the actual .env file with secrets from GitHub
-          cat > janus-bot.env << 'EOF'
-          POLYMARKET_API_KEY=${{ secrets.POLYMARKET_API_KEY }}
-          POLYMARKET_PRIVATE_KEY=${{ secrets.POLYMARKET_PRIVATE_KEY }}
-          MARKET_FETCH_INTERVAL_MS=${{ secrets.MARKET_FETCH_INTERVAL_MS || '5000' }}
-          PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'true' }}
-          EOF
+          # Verify file was created
+          ls -la .env.example
 
       - name: Create startup script (Linux/Mac)
         run: |
@@ -84,6 +79,20 @@ jobs:
           .\janus-bot.exe
           EOF
 
+      - name: Verify files before artifact creation
+        run: |
+          echo "=== Checking files in current directory ==="
+          ls -la
+          echo ""
+          echo "=== Checking .env.example ==="
+          if [ -f ".env.example" ]; then
+            echo ".env.example exists"
+            ls -la .env.example
+          else
+            echo "ERROR: .env.example NOT FOUND"
+            exit 1
+          fi
+
       - name: Create release artifacts
         run: |
           mkdir -p release-artifacts
@@ -92,6 +101,9 @@ jobs:
           cp start-janus-bot.ps1 release-artifacts/
           cp .env.example release-artifacts/
           cp README.md release-artifacts/
+          
+          echo "=== Verifying artifact contents ==="
+          ls -la release-artifacts/
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
@@ -164,6 +176,22 @@ jobs:
         with:
           name: janus-bot-build
           path: ./release-artifacts
+
+      - name: Verify downloaded artifacts
+        run: |
+          echo "=== Files in current directory ==="
+          ls -la
+          echo ""
+          echo "=== Files in release-artifacts ==="
+          ls -la release-artifacts/
+          echo ""
+          if [ -f "release-artifacts/.env.example" ]; then
+            echo ".env.example found in release-artifacts"
+            head -3 release-artifacts/.env.example
+          else
+            echo "ERROR: .env.example NOT FOUND in release-artifacts"
+            exit 1
+          fi
 
       - name: Install SSH client and sshpass
         run: |
