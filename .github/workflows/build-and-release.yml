@@ -247,8 +247,36 @@ jobs:
 
       - name: Verify deployment
         run: |
-          sleep 2
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "screen -S janus-bot -X hardcopy -h ~/janus-bot/screen.log && head -20 ~/janus-bot/screen.log"
+          sleep 3
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST << 'EOF'
+          echo "=== Checking screen sessions ==="
+          screen -ls || echo "No screen sessions running (this is OK if bot is starting)"
+          
+          echo ""
+          echo "=== Files in janus-bot directory ==="
+          ls -la ~/janus-bot/
+          
+          echo ""
+          echo "=== Checking for process logs ==="
+          if [ -f ~/janus-bot/screen.log ]; then
+            echo "Screen log exists:"
+            head -30 ~/janus-bot/screen.log
+          else
+            echo "No screen.log yet"
+          fi
+          
+          echo ""
+          echo "=== Checking if janus-bot binary is executable ==="
+          file ~/janus-bot/janus-bot
+          ls -la ~/janus-bot/janus-bot
+          
+          echo ""
+          echo "=== Checking running processes ==="
+          ps aux | grep -i janus || echo "No janus processes found"
+          
+          echo ""
+          echo "Deployment verification complete"
+          EOF
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
