@@ -32,7 +32,7 @@ jobs:
       - name: Build executable
         run: go build -o janus-bot ./cmd/bot
 
-      - name: Create .env file for executable
+      - name: Create .env example file
         run: |
           cat > .env.example << 'EOF'
           # Polymarket API Configuration
@@ -46,13 +46,20 @@ jobs:
           PAPER_TRADING_ENABLED=true
           EOF
           
-          # Create the actual .env file with secrets from GitHub
+          ls -la .env.example
+          echo "=== Contents of .env.example ==="
+          cat .env.example
+
+      - name: Create .env file with secrets
+        run: |
           cat > janus-bot.env << 'EOF'
           POLYMARKET_API_KEY=${{ secrets.POLYMARKET_API_KEY }}
           POLYMARKET_PRIVATE_KEY=${{ secrets.POLYMARKET_PRIVATE_KEY }}
           MARKET_FETCH_INTERVAL_MS=${{ secrets.MARKET_FETCH_INTERVAL_MS || '5000' }}
           PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'true' }}
           EOF
+          
+          ls -la janus-bot.env
 
       - name: Create startup script (Linux/Mac)
         run: |
@@ -86,12 +93,30 @@ jobs:
 
       - name: Create release artifacts
         run: |
+          set -e
           mkdir -p release-artifacts
+          
+          # Verify each file exists before copying
+          echo "Checking files before copy..."
+          [ -f "janus-bot" ] || { echo "ERROR: janus-bot not found"; exit 1; }
+          [ -f "start-janus-bot.sh" ] || { echo "ERROR: start-janus-bot.sh not found"; exit 1; }
+          [ -f "start-janus-bot.ps1" ] || { echo "ERROR: start-janus-bot.ps1 not found"; exit 1; }
+          [ -f ".env.example" ] || { echo "ERROR: .env.example not found"; exit 1; }
+          [ -f "README.md" ] || { echo "ERROR: README.md not found"; exit 1; }
+          
+          echo "All files found. Copying to release-artifacts..."
           cp janus-bot release-artifacts/
           cp start-janus-bot.sh release-artifacts/
           cp start-janus-bot.ps1 release-artifacts/
           cp .env.example release-artifacts/
           cp README.md release-artifacts/
+          
+          echo "Verifying copies..."
+          ls -la release-artifacts/
+          
+          echo ""
+          echo "Confirming .env.example was copied:"
+          [ -f "release-artifacts/.env.example" ] && echo "SUCCESS: .env.example is in release-artifacts" || { echo "ERROR: .env.example still missing"; exit 1; }
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
