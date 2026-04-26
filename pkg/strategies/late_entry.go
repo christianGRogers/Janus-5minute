@@ -1,6 +1,8 @@
 package strategies
 
 import (
+	"fmt"
+	"log"
 	"math"
 	"time"
 
@@ -74,8 +76,14 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 
 	// Only trade in the final minute (< 60 seconds remaining)
 	if secondsRemaining >= 60 {
+		// Only log every 10 seconds to avoid spam
+		if secondsIntoWindow%10 == 0 {
+			log.Printf("[LateEntry] Window: %ds into 300s (%.1f min remaining) - Too early to trade", secondsIntoWindow, float64(secondsRemaining)/60.0)
+		}
 		return false, "", "", 0, 0
 	}
+	
+	log.Printf("[LateEntry] Final minute! %ds remaining", secondsRemaining)
 
 	// Look through available markets for trading opportunities
 	for cacheKey, book := range markets {
@@ -93,11 +101,13 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 
 		// Check liquidity requirement
 		if book.LiquidityParsed < les.Config.MinLiquidityUSDC {
+			log.Printf("[LateEntry] %s: Liquidity %.0f < %.0f (required)", marketID, book.LiquidityParsed, les.Config.MinLiquidityUSDC)
 			continue
 		}
 
 		// Skip if we already traded this market this window
 		if les.positionsThisWindow[marketID] {
+			log.Printf("[LateEntry] %s: Already traded this window", marketID)
 			continue
 		}
 
@@ -107,13 +117,17 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 
 		// Only trade if spread is reasonable
 		if spreadPercent < les.Config.MinSpread || spreadPercent > les.Config.MaxSpread {
+			log.Printf("[LateEntry] %s: Spread %.2f%% outside range [%.2f%%, %.2f%%]", marketID, spreadPercent, les.Config.MinSpread, les.Config.MaxSpread)
 			continue
 		}
+
+		log.Printf("[LateEntry] %s: Evaluating - Price: %.4f, Spread: %.2f%%, Liquidity: %.0f", marketID, midPrice, spreadPercent, book.LiquidityParsed)
 
 		inFinalSeconds := secondsRemaining < 10
 
 		// STRATEGY 1: Final seconds - aggressive trading at extreme confidence (0.98+)
 		if inFinalSeconds {
+			log.Printf("[LateEntry] %s: Final seconds (<%ds) - checking for extreme confidence", marketID, 10)
 			// Only trade at extreme certainty: 0.98+ or 0.02-
 			if midPrice >= les.extremeConfidence {
 				// UP is near certain - BUY it
@@ -121,6 +135,7 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 					les.Config.MaxPositionSize / book.BestAskParsed,
 					book.BestAskSizeParsed*0.75,
 				)
+				log.Printf("[LateEntry] %s: SIGNAL - BUY (extreme high: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.extremeConfidence, positionSize)
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
@@ -134,6 +149,7 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 					les.Config.MaxPositionSize / book.BestBidParsed,
 					book.BestBidSizeParsed*0.75,
 				)
+				log.Printf("[LateEntry] %s: SIGNAL - SELL (extreme low: %.4f <= %.4f), size: %.0f", marketID, midPrice, 1.0-les.extremeConfidence, positionSize)
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
@@ -153,6 +169,7 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 				(les.Config.MaxPositionSize * 0.3) / book.BestAskParsed, // Only 30% of max
 				book.BestAskSizeParsed*0.2, // Take only 20% of liquidity
 			)
+			log.Printf("[LateEntry] %s: SIGNAL - BUY (high conf: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.minBuyPrice, positionSize)
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
 				les.positionsThisWindow[marketID] = true
@@ -167,6 +184,7 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 				(les.Config.MaxPositionSize * 0.2) / book.BestBidParsed, // Only 20% of max
 				book.BestBidSizeParsed*0.1, // Take only 10% of liquidity
 			)
+			log.Printf("[LateEntry] %s: SIGNAL - SELL (low conf: %.4f <= %.4f), size: %.0f", marketID, midPrice, les.maxSellPrice, positionSize)
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
 				les.positionsThisWindow[marketID] = true
