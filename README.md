@@ -153,14 +153,35 @@ The bot includes a comprehensive Python-based visualization tool that generates 
 
 ### Available Charts
 
-| Chart | Description |
-|-------|-------------|
-| [📈 Profit Timeline](./tools/VISUALIZATION_QUICKSTART.md#01-profit-timeline) | Cumulative profit over time with trade markers showing wins (green) and losses (red) |
-| [🎯 Win Rate Analysis](./tools/VISUALIZATION_QUICKSTART.md#02-win-rate-analysis) | Win/loss distribution, cumulative win rate, and trading frequency breakdown |
-| [💰 Price Analysis](./tools/VISUALIZATION_QUICKSTART.md#03-price-analysis) | Entry/exit price distributions for UP and DOWN positions with statistical overlays |
-| [💸 Fee Analysis](./tools/VISUALIZATION_QUICKSTART.md#04-fee-analysis) | Fee patterns by trade type and cumulative fee impact on profitability |
-| [📊 Account Balance](./tools/VISUALIZATION_QUICKSTART.md#05-account-balance) | Account balance progression starting from $10,000 with drawdown analysis |
-| [📋 Summary Statistics](./tools/VISUALIZATION_QUICKSTART.md#06-summary-statistics) | Key metrics: total trades, win rate, ROI, hours traded, fees, and P&L breakdown |
+#### 📈 Profit Timeline
+Cumulative profit over time with trade markers showing wins (green) and losses (red)
+
+![Profit Timeline](./charts/01_profit_timeline.png)
+
+#### 🎯 Win Rate Analysis
+Win/loss distribution, cumulative win rate, and trading frequency breakdown
+
+![Win Rate Analysis](./charts/02_win_rate_analysis.png)
+
+#### 💰 Price Analysis
+Entry/exit price distributions for UP and DOWN positions with statistical overlays
+
+![Price Analysis](./charts/03_price_analysis.png)
+
+#### 💸 Fee Analysis
+Fee patterns by trade type and cumulative fee impact on profitability
+
+![Fee Analysis](./charts/04_fee_analysis.png)
+
+#### 📊 Account Balance
+Account balance progression starting from $10,000 with drawdown analysis
+
+![Account Balance](./charts/05_account_balance.png)
+
+#### 📋 Summary Statistics
+Key metrics: total trades, win rate, ROI, hours traded, fees, and P&L breakdown
+
+![Summary Statistics](./charts/06_summary_stats.png)
 
 ### Quick Start
 
