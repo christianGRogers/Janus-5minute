@@ -167,8 +167,8 @@ jobs:
 
       - name: Install SSH client and sshpass
         run: |
-          apt-get update
-          apt-get install -y openssh-client sshpass
+          sudo apt-get update
+          sudo apt-get install -y openssh-client sshpass
 
       - name: Create deployment directory on server
         env:
