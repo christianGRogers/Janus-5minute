@@ -97,26 +97,39 @@ jobs:
           mkdir -p release-artifacts
           
           # Verify each file exists before copying
-          echo "Checking files before copy..."
-          [ -f "janus-bot" ] || { echo "ERROR: janus-bot not found"; exit 1; }
-          [ -f "start-janus-bot.sh" ] || { echo "ERROR: start-janus-bot.sh not found"; exit 1; }
-          [ -f "start-janus-bot.ps1" ] || { echo "ERROR: start-janus-bot.ps1 not found"; exit 1; }
-          [ -f ".env.example" ] || { echo "ERROR: .env.example not found"; exit 1; }
-          [ -f "README.md" ] || { echo "ERROR: README.md not found"; exit 1; }
+          echo "=== Checking files before copy ==="
+          ls -la .env.example janus-bot start-janus-bot.sh start-janus-bot.ps1 README.md
+          echo ""
           
-          echo "All files found. Copying to release-artifacts..."
-          cp janus-bot release-artifacts/
-          cp start-janus-bot.sh release-artifacts/
-          cp start-janus-bot.ps1 release-artifacts/
-          cp .env.example release-artifacts/
-          cp README.md release-artifacts/
+          echo "=== Attempting to copy files ==="
+          echo "Copying janus-bot..."
+          cp -v janus-bot release-artifacts/ 2>&1 || { echo "FAILED"; exit 1; }
           
-          echo "Verifying copies..."
+          echo "Copying start-janus-bot.sh..."
+          cp -v start-janus-bot.sh release-artifacts/ 2>&1 || { echo "FAILED"; exit 1; }
+          
+          echo "Copying start-janus-bot.ps1..."
+          cp -v start-janus-bot.ps1 release-artifacts/ 2>&1 || { echo "FAILED"; exit 1; }
+          
+          echo "Copying .env.example..."
+          cp -v .env.example release-artifacts/ 2>&1 || { echo "FAILED"; exit 1; }
+          
+          echo "Copying README.md..."
+          cp -v README.md release-artifacts/ 2>&1 || { echo "FAILED"; exit 1; }
+          
+          echo ""
+          echo "=== Contents of release-artifacts after copy ==="
           ls -la release-artifacts/
           
           echo ""
-          echo "Confirming .env.example was copied:"
-          [ -f "release-artifacts/.env.example" ] && echo "SUCCESS: .env.example is in release-artifacts" || { echo "ERROR: .env.example still missing"; exit 1; }
+          echo "=== Verifying .env.example ==="
+          if [ -f "release-artifacts/.env.example" ]; then
+            echo "SUCCESS: .env.example is in release-artifacts"
+            wc -l release-artifacts/.env.example
+          else
+            echo "ERROR: .env.example still missing from release-artifacts"
+            exit 1
+          fi
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
