@@ -32,24 +32,6 @@ jobs:
       - name: Build executable
         run: go build -o janus-bot ./cmd/bot
 
-      - name: Create .env example file
-        run: |
-          cat > .env.example << 'EOF'
-          # Polymarket API Configuration
-          POLYMARKET_API_KEY=your_api_key_here
-          POLYMARKET_PRIVATE_KEY=your_private_key_here
-          
-          # Market Configuration
-          MARKET_FETCH_INTERVAL_MS=5000
-          
-          # Trading Configuration
-          PAPER_TRADING_ENABLED=true
-          EOF
-          
-          ls -la .env.example
-          echo "=== Contents of .env.example ==="
-          cat .env.example
-
       - name: Create .env file with secrets
         run: |
           cat > janus-bot.env << 'EOF'
@@ -91,65 +73,17 @@ jobs:
           .\janus-bot.exe
           EOF
 
-      - name: Debug - Check .env.example before artifact step
-        run: |
-          echo "Current directory: $(pwd)"
-          echo ""
-          echo "Files in current directory:"
-          ls -la
-          echo ""
-          echo ".env.example details:"
-          file .env.example
-          stat .env.example
-          echo ""
-          echo "Content of .env.example:"
-          cat .env.example
-
       - name: Create release artifacts
         run: |
-          set +e  # Don't exit on error
           mkdir -p release-artifacts
+          cp janus-bot release-artifacts/
+          cp start-janus-bot.sh release-artifacts/
+          cp start-janus-bot.ps1 release-artifacts/
+          cp .env.example release-artifacts/
+          cp README.md release-artifacts/
           
-          echo "Step 1: Copying janus-bot"
-          cp janus-bot release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
-          
-          echo "Step 2: Copying start-janus-bot.sh"
-          cp start-janus-bot.sh release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
-          
-          echo "Step 3: Copying start-janus-bot.ps1"
-          cp start-janus-bot.ps1 release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
-          
-          echo "Step 4: Copying .env.example"
-          cp .env.example release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
-          
-          echo "Step 5: Copying README.md"
-          cp README.md release-artifacts/ && echo "SUCCESS" || echo "FAILED: $?"
-          
-          echo ""
-          echo "=== Contents of release-artifacts after copy ==="
+          echo "=== Contents of release-artifacts ==="
           ls -la release-artifacts/
-          
-          set -e  # Turn error checking back on
-
-      - name: Verify .env.example in artifacts
-        run: |
-          echo "Checking if .env.example is in release-artifacts..."
-          if [ ! -f "release-artifacts/.env.example" ]; then
-            echo "ERROR: .env.example missing!"
-            echo "Attempting manual copy..."
-            cat .env.example > release-artifacts/.env.example
-            echo "Manual copy done. Current contents:"
-            ls -la release-artifacts/
-            if [ -f "release-artifacts/.env.example" ]; then
-              echo "SUCCESS: .env.example now exists after manual copy"
-            else
-              echo "FAILED: Still missing after manual copy"
-              exit 1
-            fi
-          else
-            echo "OK: .env.example is present"
-            ls -la release-artifacts/.env.example
-          fi
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
