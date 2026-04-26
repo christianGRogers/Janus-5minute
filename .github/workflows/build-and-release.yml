@@ -79,7 +79,6 @@ jobs:
           cp janus-bot release-artifacts/
           cp start-janus-bot.sh release-artifacts/
           cp start-janus-bot.ps1 release-artifacts/
-          cp .env.example release-artifacts/
           cp README.md release-artifacts/
           
           echo "=== Contents of release-artifacts ==="
@@ -93,7 +92,7 @@ jobs:
           name: Release v${{ github.run_number }}
           draft: false
           prerelease: false
-          artifacts: "release-artifacts/janus-bot,release-artifacts/start-janus-bot.sh,release-artifacts/start-janus-bot.ps1,release-artifacts/.env.example,release-artifacts/README.md"
+          artifacts: "release-artifacts/janus-bot,release-artifacts/start-janus-bot.sh,release-artifacts/start-janus-bot.ps1,release-artifacts/README.md"
           artifactErrorsFailBuild: false
 
       - name: Upload build artifacts
@@ -159,19 +158,17 @@ jobs:
 
       - name: Verify downloaded artifacts
         run: |
-          echo "=== Files in current directory ==="
-          ls -la
-          echo ""
           echo "=== Files in release-artifacts ==="
           ls -la release-artifacts/
-          echo ""
-          if [ -f "release-artifacts/.env.example" ]; then
-            echo ".env.example found in release-artifacts"
-            head -3 release-artifacts/.env.example
-          else
-            echo "ERROR: .env.example NOT FOUND in release-artifacts"
-            exit 1
-          fi
+          
+          # Verify essential files are present
+          for file in janus-bot start-janus-bot.sh README.md; do
+            if [ ! -f "release-artifacts/$file" ]; then
+              echo "ERROR: $file NOT FOUND in release-artifacts"
+              exit 1
+            fi
+          done
+          echo "All essential files present"
 
       - name: Install SSH client and sshpass
         run: |
