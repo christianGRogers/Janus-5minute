@@ -117,6 +117,26 @@ jobs:
           echo "=== Contents of release-artifacts after copy ==="
           ls -la release-artifacts/
 
+      - name: Verify .env.example in artifacts
+        run: |
+          echo "Checking if .env.example is in release-artifacts..."
+          if [ ! -f "release-artifacts/.env.example" ]; then
+            echo "ERROR: .env.example missing!"
+            echo "Attempting manual copy..."
+            cat .env.example > release-artifacts/.env.example
+            echo "Manual copy done. Current contents:"
+            ls -la release-artifacts/
+            if [ -f "release-artifacts/.env.example" ]; then
+              echo "SUCCESS: .env.example now exists after manual copy"
+            else
+              echo "FAILED: Still missing after manual copy"
+              exit 1
+            fi
+          else
+            echo "OK: .env.example is present"
+            ls -la release-artifacts/.env.example
+          fi
+
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
