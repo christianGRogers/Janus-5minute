@@ -1,7 +1,6 @@
 package strategies
 
 import (
-	"fmt"
 	"log"
 	"math"
 	"time"
