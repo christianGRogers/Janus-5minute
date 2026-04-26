@@ -149,3 +149,123 @@ jobs:
           name: janus-bot-${{ matrix.os }}-${{ matrix.arch }}
           path: janus-bot-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 30
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: janus-bot-build
+          path: ./release-artifacts
+
+      - name: Install SSH client and sshpass
+        run: |
+          apt-get update
+          apt-get install -y openssh-client sshpass
+
+      - name: Create deployment directory on server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '23' }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "mkdir -p ~/janus-bot"
+
+      - name: Upload binary to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '23' }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no -P $SSH_PORT release-artifacts/janus-bot $SSH_USERNAME@$SSH_HOST:~/janus-bot/janus-bot
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no -P $SSH_PORT release-artifacts/start-janus-bot.sh $SSH_USERNAME@$SSH_HOST:~/janus-bot/start-janus-bot.sh
+
+      - name: Upload environment file to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '23' }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no -P $SSH_PORT release-artifacts/.env.example $SSH_USERNAME@$SSH_HOST:~/janus-bot/.env.example
+
+      - name: Set permissions and deploy with screen
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '23' }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
+          POLYMARKET_PRIVATE_KEY: ${{ secrets.POLYMARKET_PRIVATE_KEY }}
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST << 'DEPLOY_SCRIPT'
+          set -e
+          
+          # Navigate to bot directory
+          cd ~/janus-bot
+          
+          # Make scripts executable
+          chmod +x janus-bot
+          chmod +x start-janus-bot.sh
+          
+          # Create .env file with secrets
+          cat > janus-bot.env << 'EOF'
+          POLYMARKET_API_KEY=${{ secrets.POLYMARKET_API_KEY }}
+          POLYMARKET_PRIVATE_KEY=${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          EOF
+          
+          # Kill existing screen session if running
+          screen -S janus-bot -X quit 2>/dev/null || true
+          sleep 1
+          
+          # Start new screen session with bot
+          screen -dmS janus-bot -c /dev/null bash -c 'cd ~/janus-bot && source janus-bot.env && ./janus-bot'
+          
+          # Verify screen session is running
+          if screen -list | grep -q janus-bot; then
+              echo "✅ Janus bot deployed and running in screen session 'janus-bot'"
+          else
+              echo "❌ Failed to start screen session"
+              exit 1
+          fi
+          
+          DEPLOY_SCRIPT
+
+      - name: Verify deployment
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '23' }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          # Wait a moment for the bot to start
+          sleep 2
+          
+          # Check if screen session is running
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST "screen -ls janus-bot" && echo "✅ Deployment verified: bot is running"
+
+      - name: Create deployment summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Build:** Successful ✅" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment:** Success ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Server Details:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Host: \`${{ secrets.SSH_HOST }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Port: \`${{ secrets.SSH_PORT || '23' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- User: \`${{ secrets.SSH_USERNAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Process Management:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Session: \`janus-bot\`" >> $GITHUB_STEP_SUMMARY
+          echo "- View logs: \`ssh -p 23 user@host 'screen -r janus-bot'\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Stop bot: \`screen -S janus-bot -X quit\`" >> $GITHUB_STEP_SUMMARY
