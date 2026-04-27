@@ -124,17 +124,51 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 
 		inFinalSeconds := secondsRemaining < 10
 
+		// Check all conditions for this data point
+		extremeHighMet := midPrice >= les.extremeConfidence
+		extremeLowMet := midPrice <= (1.0 - les.extremeConfidence)
+		highConfBuyMet := midPrice >= les.minBuyPrice
+		lowConfSellMet := midPrice <= les.maxSellPrice
+		minSizeForBuy := math.Min(
+			les.Config.MaxPositionSize / book.BestAskParsed,
+			book.BestAskSizeParsed*0.75,
+		) > 0.5
+		minSizeForSell := math.Min(
+			les.Config.MaxPositionSize / book.BestBidParsed,
+			book.BestBidSizeParsed*0.75,
+		) > 0.5
+		minSizeForConservativeBuy := math.Min(
+			(les.Config.MaxPositionSize * 0.3) / book.BestAskParsed,
+			book.BestAskSizeParsed*0.2,
+		) > 0.5
+		minSizeForConservativeSell := math.Min(
+			(les.Config.MaxPositionSize * 0.2) / book.BestBidParsed,
+			book.BestBidSizeParsed*0.1,
+		) > 0.5
+
+		// Log all conditions
+		log.Printf("[LateEntry] %s: CONDITIONS @ %ds remaining:", marketID, secondsRemaining)
+		log.Printf("  [%v] In final seconds (<%d)           | inFinalSeconds=%v", boolToCheck(inFinalSeconds), 10, inFinalSeconds)
+		log.Printf("  [%v] Extreme high confidence (≥%.4f)   | price=%.4f", boolToCheck(extremeHighMet), les.extremeConfidence, midPrice)
+		log.Printf("  [%v] Extreme low confidence (≤%.4f)    | price=%.4f", boolToCheck(extremeLowMet), 1.0-les.extremeConfidence, midPrice)
+		log.Printf("  [%v] High confidence BUY (≥%.4f)      | price=%.4f", boolToCheck(highConfBuyMet), les.minBuyPrice, midPrice)
+		log.Printf("  [%v] Low confidence SELL (≤%.4f)      | price=%.4f", boolToCheck(lowConfSellMet), les.maxSellPrice, midPrice)
+		log.Printf("  [%v] Size OK for extreme BUY (%.1f)    | extremeSize=%.0f", boolToCheck(minSizeForBuy), 0.5, math.Min(les.Config.MaxPositionSize/book.BestAskParsed, book.BestAskSizeParsed*0.75))
+		log.Printf("  [%v] Size OK for extreme SELL (%.1f)   | extremeSize=%.0f", boolToCheck(minSizeForSell), 0.5, math.Min(les.Config.MaxPositionSize/book.BestBidParsed, book.BestBidSizeParsed*0.75))
+		log.Printf("  [%v] Size OK for conservative BUY (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeBuy), 0.5, math.Min((les.Config.MaxPositionSize*0.3)/book.BestAskParsed, book.BestAskSizeParsed*0.2))
+		log.Printf("  [%v] Size OK for conservative SELL (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeSell), 0.5, math.Min((les.Config.MaxPositionSize*0.2)/book.BestBidParsed, book.BestBidSizeParsed*0.1))
+
 		// STRATEGY 1: Final seconds - aggressive trading at extreme confidence (0.98+)
 		if inFinalSeconds {
-			log.Printf("[LateEntry] %s: Final seconds (<%ds) - checking for extreme confidence", marketID, 10)
+			log.Printf("[LateEntry] %s: FINAL SECONDS - checking for extreme confidence...", marketID)
 			// Only trade at extreme certainty: 0.98+ or 0.02-
-			if midPrice >= les.extremeConfidence {
+			if extremeHighMet && minSizeForBuy {
 				// UP is near certain - BUY it
 				positionSize := math.Min(
 					les.Config.MaxPositionSize / book.BestAskParsed,
 					book.BestAskSizeParsed*0.75,
 				)
-				log.Printf("[LateEntry] %s: SIGNAL - BUY (extreme high: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.extremeConfidence, positionSize)
+				log.Printf("[LateEntry] %s: ✓ SIGNAL - BUY (extreme high: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.extremeConfidence, positionSize)
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
@@ -142,13 +176,13 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 				}
 			}
 
-			if midPrice <= (1.0 - les.extremeConfidence) {
+			if extremeLowMet && minSizeForSell {
 				// UP is near certain to lose - SELL it (short)
 				positionSize := math.Min(
 					les.Config.MaxPositionSize / book.BestBidParsed,
 					book.BestBidSizeParsed*0.75,
 				)
-				log.Printf("[LateEntry] %s: SIGNAL - SELL (extreme low: %.4f <= %.4f), size: %.0f", marketID, midPrice, 1.0-les.extremeConfidence, positionSize)
+				log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (extreme low: %.4f <= %.4f), size: %.0f", marketID, midPrice, 1.0-les.extremeConfidence, positionSize)
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
@@ -162,13 +196,13 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 		// LOW confidence shorts (0.15-0.17) are disaster - avoid them
 
 		// BUY: Only when UP price is very high (0.75+)
-		if midPrice >= les.minBuyPrice {
+		if highConfBuyMet && minSizeForConservativeBuy {
 			// Conservative position size for high-confidence buys
 			positionSize := math.Min(
 				(les.Config.MaxPositionSize * 0.3) / book.BestAskParsed, // Only 30% of max
 				book.BestAskSizeParsed*0.2, // Take only 20% of liquidity
 			)
-			log.Printf("[LateEntry] %s: SIGNAL - BUY (high conf: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.minBuyPrice, positionSize)
+			log.Printf("[LateEntry] %s: ✓ SIGNAL - BUY (high conf: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.minBuyPrice, positionSize)
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
 				les.positionsThisWindow[marketID] = true
@@ -177,13 +211,13 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 		}
 
 		// SELL: Only when UP price is very low (0.25-) - AVOID medium confidence shorts
-		if midPrice <= les.maxSellPrice {
+		if lowConfSellMet && minSizeForConservativeSell {
 			// Very conservative position size for shorts
 			positionSize := math.Min(
 				(les.Config.MaxPositionSize * 0.2) / book.BestBidParsed, // Only 20% of max
 				book.BestBidSizeParsed*0.1, // Take only 10% of liquidity
 			)
-			log.Printf("[LateEntry] %s: SIGNAL - SELL (low conf: %.4f <= %.4f), size: %.0f", marketID, midPrice, les.maxSellPrice, positionSize)
+			log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (low conf: %.4f <= %.4f), size: %.0f", marketID, midPrice, les.maxSellPrice, positionSize)
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
 				les.positionsThisWindow[marketID] = true
@@ -213,4 +247,12 @@ func (les *LateEntryStrategy) Reset() {
 	les.lastCheckTime = time.Now()
 	les.positionsThisWindow = make(map[string]bool)
 	les.lastTradeTime = time.Time{} // Reset last trade time
+}
+
+// boolToCheck converts a boolean to a visual indicator (✓ or ✗)
+func boolToCheck(b bool) string {
+	if b {
+		return "✓"
+	}
+	return "✗"
 }
