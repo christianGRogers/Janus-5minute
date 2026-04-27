@@ -3,6 +3,7 @@ package strategies
 import (
 	"janus-bot/pkg/polymarket"
 	"janus-bot/pkg/trading"
+	"log"
 )
 
 // TradeSignal represents a complete trading signal with all necessary information
@@ -67,6 +68,7 @@ func NewBaseStrategy(engine *trading.PaperTradingEngine) *BaseStrategy {
 
 // Evaluate is a default implementation that does nothing - subclasses should override
 func (bs *BaseStrategy) Evaluate(markets map[string]*polymarket.MarketBook) (bool, string, string, float64, float64) {
+	log.Printf("BaseStrategy Evaluate called - no logic implemented")
 	return false, "", "", 0, 0
 }
 

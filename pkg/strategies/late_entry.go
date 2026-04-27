@@ -29,6 +29,8 @@ type LateEntryStrategy struct {
 
 // NewLateEntryStrategy creates a new late entry strategy
 func NewLateEntryStrategy(engine *trading.PaperTradingEngine) *LateEntryStrategy {
+	log.Printf("Initializing LateEntryStrategy with parameters: minBuyPrice=%.2f, maxSellPrice=%.2f, minWinConfidence=%.2f, extremeConfidence=%.2f",
+		0.75, 0.25, 0.75, 0.98,)
 	return &LateEntryStrategy{
 		BaseStrategy:        NewBaseStrategy(engine),
 		windowStartTime:     time.Now(),
@@ -46,7 +48,7 @@ func (les *LateEntryStrategy) Name() string {
 	return "LateEntry"
 }
 
-// Evaluate analyzes market data and returns trading signals
+// EvaluateV2 analyzes market data and returns complete trading signal
 // Strategy logic:
 // 1. Wait until less than 1 minute (60 seconds) remains in the window
 // 2. Check prices frequently for responsiveness
@@ -54,7 +56,8 @@ func (les *LateEntryStrategy) Name() string {
 // 4. BUY only when UP price is 0.75+
 // 5. SELL only when UP price is 0.25- (avoid medium confidence shorts which lose)
 // 6. In final seconds: Buy/Sell aggressively at extreme confidence (0.98+)
-func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook) (bool, string, string, float64, float64) {
+func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *TradeSignal {
+	
 	// Calculate the ACTUAL 5-minute market window based on current time
 	// Markets are in 300-second (5-minute) windows: 0:00-4:59, 5:00-9:59, etc.
 	now := time.Now()
@@ -68,25 +71,27 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 	secondsRemaining := 300 - secondsIntoWindow // 5 minutes = 300 seconds
 
 	// Increase check frequency: check every 0.5 seconds
-	if time.Since(les.lastCheckTime) < 500*time.Millisecond {
-		return false, "", "", 0, 0
-	}
+	// timeSinceLastCheck := time.Since(les.lastCheckTime)
+	// if timeSinceLastCheck < 500*time.Millisecond {
+	// 	// Early return - too soon to check again (silent, no logging)
+	// 	return false, "", "", 0, 0
+	// }
 	les.lastCheckTime = time.Now()
+
+	// Log every check that passes the frequency gate
+	log.Printf("[LateEntry] EVALUATE - Window: %ds into 300s (%d seconds remaining)", secondsIntoWindow, secondsRemaining)
 
 	// Only trade in the final minute (< 60 seconds remaining)
 	if secondsRemaining >= 60 {
-		// Only log every 10 seconds to avoid spam
-		if secondsIntoWindow%10 == 0 {
-			log.Printf("[LateEntry] Window: %ds into 300s (%.1f min remaining) - Too early to trade", secondsIntoWindow, float64(secondsRemaining)/60.0)
-		}
-		return false, "", "", 0, 0
+		log.Printf("[LateEntry]   → Too early to trade (need < 60 seconds remaining)")
+		return &TradeSignal{ShouldTrade: false}
 	}
 	
-	log.Printf("[LateEntry] Final minute! %ds remaining", secondsRemaining)
+	log.Printf("[LateEntry]   → FINAL MINUTE! %d seconds remaining - checking markets...", secondsRemaining)
 
 	// Look through available markets for trading opportunities
 	for cacheKey, book := range markets {
-		if book == nil || book.BestBidParsed == 0 || book.BestAskParsed == 0 {
+		if book == nil {
 			continue
 		}
 
@@ -98,26 +103,52 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 		// Extract market ID (remove -UP suffix)
 		marketID := cacheKey[:len(cacheKey)-3]
 
+		// Log market state
+		log.Printf("[LateEntry] %s: Market state - Bid: %.4f (size: %.1f), Ask: %.4f (size: %.1f), Liquidity: %.0f", 
+			marketID, book.BestBidParsed, book.BestBidSizeParsed, book.BestAskParsed, book.BestAskSizeParsed, book.LiquidityParsed)
+
+		// Check for valid prices - we need at least one side with a valid price
+		if book.BestBidParsed == 0 && book.BestAskParsed == 0 {
+			log.Printf("[LateEntry] %s: Skipped - both bid and ask are 0", marketID)
+			continue
+		}
+
 		// Check liquidity requirement
 		if book.LiquidityParsed < les.Config.MinLiquidityUSDC {
-			log.Printf("[LateEntry] %s: Liquidity %.0f < %.0f (required)", marketID, book.LiquidityParsed, les.Config.MinLiquidityUSDC)
+			log.Printf("[LateEntry] %s: Skipped - Liquidity %.0f < %.0f (required)", marketID, book.LiquidityParsed, les.Config.MinLiquidityUSDC)
 			continue
 		}
 
 		// Skip if we already traded this market this window
 		if les.positionsThisWindow[marketID] {
-			log.Printf("[LateEntry] %s: Already traded this window", marketID)
+			log.Printf("[LateEntry] %s: Skipped - Already traded this window", marketID)
 			continue
 		}
 
-		// Calculate spread percentage
-		midPrice := (book.BestBidParsed + book.BestAskParsed) / 2
-		spreadPercent := ((book.BestAskParsed - book.BestBidParsed) / midPrice) * 100
+		// Calculate mid price and spread - handle cases where one side is 0
+		var midPrice float64
+		if book.BestBidParsed > 0 && book.BestAskParsed > 0 {
+			midPrice = (book.BestBidParsed + book.BestAskParsed) / 2
+		} else if book.BestBidParsed > 0 {
+			midPrice = book.BestBidParsed
+		} else {
+			midPrice = book.BestAskParsed
+		}
 
-		// Only trade if spread is reasonable
-		if spreadPercent < les.Config.MinSpread || spreadPercent > les.Config.MaxSpread {
-			log.Printf("[LateEntry] %s: Spread %.2f%% outside range [%.2f%%, %.2f%%]", marketID, spreadPercent, les.Config.MinSpread, les.Config.MaxSpread)
-			continue
+		var spreadPercent float64
+		if midPrice > 0 {
+			spreadPercent = ((book.BestAskParsed - book.BestBidParsed) / midPrice) * 100
+		}
+
+		// For one-sided markets (ask=0 or bid=0), allow larger spreads
+		// Only enforce strict spread limits when both sides have prices
+		if book.BestBidParsed > 0 && book.BestAskParsed > 0 {
+			if spreadPercent < les.Config.MinSpread || spreadPercent > les.Config.MaxSpread {
+				log.Printf("[LateEntry] %s: Skipped - Spread %.2f%% outside range [%.2f%%, %.2f%%]", marketID, spreadPercent, les.Config.MinSpread, les.Config.MaxSpread)
+				continue
+			}
+		} else {
+			log.Printf("[LateEntry] %s: One-sided market (bid=%.4f, ask=%.4f) - allowing wide spread", marketID, book.BestBidParsed, book.BestAskParsed)
 		}
 
 		log.Printf("[LateEntry] %s: Evaluating - Price: %.4f, Spread: %.2f%%, Liquidity: %.0f", marketID, midPrice, spreadPercent, book.LiquidityParsed)
@@ -172,7 +203,14 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
-					return true, marketID, "BUY", book.BestAskParsed, positionSize
+					return &TradeSignal{
+						ShouldTrade:        true,
+						MarketID:           marketID,
+						Side:               "BUY",
+						Price:              book.BestAskParsed,
+						Size:               positionSize,
+						AvailableLiquidity: book.BestAskSizeParsed,
+					}
 				}
 			}
 
@@ -186,7 +224,14 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
-					return true, marketID, "SELL", book.BestBidParsed, positionSize
+					return &TradeSignal{
+						ShouldTrade:        true,
+						MarketID:           marketID,
+						Side:               "SELL",
+						Price:              book.BestBidParsed,
+						Size:               positionSize,
+						AvailableLiquidity: book.BestBidSizeParsed,
+					}
 				}
 			}
 		}
@@ -206,7 +251,14 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
 				les.positionsThisWindow[marketID] = true
-				return true, marketID, "BUY", book.BestAskParsed, positionSize
+				return &TradeSignal{
+					ShouldTrade:        true,
+					MarketID:           marketID,
+					Side:               "BUY",
+					Price:              book.BestAskParsed,
+					Size:               positionSize,
+					AvailableLiquidity: book.BestAskSizeParsed,
+				}
 			}
 		}
 
@@ -221,12 +273,19 @@ func (les *LateEntryStrategy) Evaluate(markets map[string]*polymarket.MarketBook
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
 				les.positionsThisWindow[marketID] = true
-				return true, marketID, "SELL", book.BestBidParsed, positionSize
+				return &TradeSignal{
+					ShouldTrade:        true,
+					MarketID:           marketID,
+					Side:               "SELL",
+					Price:              book.BestBidParsed,
+					Size:               positionSize,
+					AvailableLiquidity: book.BestBidSizeParsed,
+				}
 			}
 		}
 	}
 
-	return false, "", "", 0, 0
+	return &TradeSignal{ShouldTrade: false}
 }
 
 // OnOrderPlaced is called after an order is executed
