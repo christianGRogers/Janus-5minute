@@ -393,11 +393,11 @@ func (p *PaperTradingEngine) GetPositions() map[string]*PaperPosition {
 	return posCopy
 }
 
-// GetBalance returns current balance
+// GetBalance returns current balance (starting balance + cumulative profit)
 func (p *PaperTradingEngine) GetBalance() float64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.balance
+	return p.startingBalance + p.cumulativeProfit
 }
 
 // GetEquity returns total account equity (balance + positions value at current price)
