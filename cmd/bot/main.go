@@ -65,7 +65,7 @@ func main() {
 	// Create and initialize strategy
 	var strategy strategies.Strategy
 	if cfg.PaperTradingEnabled {
-		strategy = strategies.NewLateEntryStrategy(tradingEngine)
+		strategy = strategies.NewLateEntryUpDownStrategy(tradingEngine)
 		log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
 	}
 
