@@ -41,7 +41,11 @@ func NewLateEntryStrategy(engine *trading.PaperTradingEngine) *LateEntryStrategy
 		minWinConfidence:    0.75,        // 25% distance from 0.50 midpoint
 		extremeConfidence:   0.98,        // Only trade at extreme certainty
 	}
-	strategy.Config.MaxPositionSize = 100.0
+	// Use 100% risk tolerance: can risk up to 100% of current balance per trade
+	// This means if balance is $20, a single trade can be up to $20
+	// If balance is $100, a single trade can be up to $100
+	strategy.Config.RiskTolerance = 0.4
+	strategy.Config.MaxPositionSize = 0 // Disable fixed max, use dynamic sizing
 	return strategy
 }
 
@@ -156,6 +160,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		log.Printf("[LateEntry] %s: Evaluating - Price: %.4f, Spread: %.2f%%, Liquidity: %.0f", marketID, midPrice, spreadPercent, book.LiquidityParsed)
 
 		inFinalSeconds := secondsRemaining < 10
+		
+		// Get dynamic position size based on current balance and risk tolerance
+		maxPosSize := les.GetDynamicPositionSize()
 
 		// Check all conditions for this data point
 		extremeHighMet := midPrice >= les.extremeConfidence
@@ -163,33 +170,33 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		highConfBuyMet := midPrice >= les.minBuyPrice
 		lowConfSellMet := midPrice <= les.maxSellPrice
 		minSizeForBuy := math.Min(
-			les.Config.MaxPositionSize / book.BestAskParsed,
+			maxPosSize / book.BestAskParsed,
 			book.BestAskSizeParsed*0.75,
 		) > 0.5
 		minSizeForSell := math.Min(
-			les.Config.MaxPositionSize / book.BestBidParsed,
+			maxPosSize / book.BestBidParsed,
 			book.BestBidSizeParsed*0.75,
 		) > 0.5
 		minSizeForConservativeBuy := math.Min(
-			(les.Config.MaxPositionSize * 0.3) / book.BestAskParsed,
+			(maxPosSize * 0.3) / book.BestAskParsed,
 			book.BestAskSizeParsed*0.2,
 		) > 0.5
 		minSizeForConservativeSell := math.Min(
-			(les.Config.MaxPositionSize * 0.2) / book.BestBidParsed,
+			(maxPosSize * 0.2) / book.BestBidParsed,
 			book.BestBidSizeParsed*0.1,
 		) > 0.5
 
 		// Log all conditions
-		log.Printf("[LateEntry] %s: CONDITIONS @ %ds remaining:", marketID, secondsRemaining)
+		log.Printf("[LateEntry] %s: CONDITIONS @ %ds remaining (maxPosSize: $%.2f):", marketID, secondsRemaining, maxPosSize)
 		log.Printf("  [%v] In final seconds (<%d)           | inFinalSeconds=%v", boolToCheck(inFinalSeconds), 10, inFinalSeconds)
 		log.Printf("  [%v] Extreme high confidence (≥%.4f)   | price=%.4f", boolToCheck(extremeHighMet), les.extremeConfidence, midPrice)
 		log.Printf("  [%v] Extreme low confidence (≤%.4f)    | price=%.4f", boolToCheck(extremeLowMet), 1.0-les.extremeConfidence, midPrice)
 		log.Printf("  [%v] High confidence BUY (≥%.4f)      | price=%.4f", boolToCheck(highConfBuyMet), les.minBuyPrice, midPrice)
 		log.Printf("  [%v] Low confidence SELL (≤%.4f)      | price=%.4f", boolToCheck(lowConfSellMet), les.maxSellPrice, midPrice)
-		log.Printf("  [%v] Size OK for extreme BUY (%.1f)    | extremeSize=%.0f", boolToCheck(minSizeForBuy), 0.5, math.Min(les.Config.MaxPositionSize/book.BestAskParsed, book.BestAskSizeParsed*0.75))
-		log.Printf("  [%v] Size OK for extreme SELL (%.1f)   | extremeSize=%.0f", boolToCheck(minSizeForSell), 0.5, math.Min(les.Config.MaxPositionSize/book.BestBidParsed, book.BestBidSizeParsed*0.75))
-		log.Printf("  [%v] Size OK for conservative BUY (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeBuy), 0.5, math.Min((les.Config.MaxPositionSize*0.3)/book.BestAskParsed, book.BestAskSizeParsed*0.2))
-		log.Printf("  [%v] Size OK for conservative SELL (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeSell), 0.5, math.Min((les.Config.MaxPositionSize*0.2)/book.BestBidParsed, book.BestBidSizeParsed*0.1))
+		log.Printf("  [%v] Size OK for extreme BUY (%.1f)    | extremeSize=%.0f", boolToCheck(minSizeForBuy), 0.5, math.Min(maxPosSize/book.BestAskParsed, book.BestAskSizeParsed*0.75))
+		log.Printf("  [%v] Size OK for extreme SELL (%.1f)   | extremeSize=%.0f", boolToCheck(minSizeForSell), 0.5, math.Min(maxPosSize/book.BestBidParsed, book.BestBidSizeParsed*0.75))
+		log.Printf("  [%v] Size OK for conservative BUY (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeBuy), 0.5, math.Min((maxPosSize*0.3)/book.BestAskParsed, book.BestAskSizeParsed*0.2))
+		log.Printf("  [%v] Size OK for conservative SELL (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeSell), 0.5, math.Min((maxPosSize*0.2)/book.BestBidParsed, book.BestBidSizeParsed*0.1))
 
 		// STRATEGY 1: Final seconds - aggressive trading at extreme confidence (0.98+)
 		if inFinalSeconds {
@@ -198,7 +205,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			if extremeHighMet && minSizeForBuy {
 				// UP is near certain - BUY it
 				positionSize := math.Min(
-					les.Config.MaxPositionSize / book.BestAskParsed,
+					maxPosSize / book.BestAskParsed,
 					book.BestAskSizeParsed*0.75,
 				)
 				log.Printf("[LateEntry] %s: ✓ SIGNAL - BUY (extreme high: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.extremeConfidence, positionSize)
@@ -220,7 +227,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			if extremeLowMet && minSizeForSell {
 				// UP is near certain to lose - SELL it (short)
 				positionSize := math.Min(
-					les.Config.MaxPositionSize / book.BestBidParsed,
+					maxPosSize / book.BestBidParsed,
 					book.BestBidSizeParsed*0.75,
 				)
 				log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (extreme low: %.4f <= %.4f), size: %.0f", marketID, midPrice, 1.0-les.extremeConfidence, positionSize)
@@ -248,7 +255,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		if highConfBuyMet && minSizeForConservativeBuy {
 			// Conservative position size for high-confidence buys
 			positionSize := math.Min(
-				(les.Config.MaxPositionSize * 0.3) / book.BestAskParsed, // Only 30% of max
+				(maxPosSize * 0.3) / book.BestAskParsed, // Only 30% of max
 				book.BestAskSizeParsed*0.2, // Take only 20% of liquidity
 			)
 			log.Printf("[LateEntry] %s: ✓ SIGNAL - BUY (high conf: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.minBuyPrice, positionSize)
@@ -271,7 +278,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		if lowConfSellMet && minSizeForConservativeSell {
 			// Very conservative position size for shorts
 			positionSize := math.Min(
-				(les.Config.MaxPositionSize * 0.2) / book.BestBidParsed, // Only 20% of max
+				(maxPosSize * 0.2) / book.BestBidParsed, // Only 20% of max
 				book.BestBidSizeParsed*0.1, // Take only 10% of liquidity
 			)
 			log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (low conf: %.4f <= %.4f), size: %.0f", marketID, midPrice, les.maxSellPrice, positionSize)

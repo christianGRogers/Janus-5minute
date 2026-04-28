@@ -43,9 +43,10 @@ type Strategy interface {
 // StrategyConfig holds common configuration for strategies
 type StrategyConfig struct {
 	MinLiquidityUSDC float64 // Minimum liquidity required to trade
-	MaxPositionSize  float64 // Maximum position size in USDC
+	MaxPositionSize  float64 // Maximum position size in USDC (deprecated - use RiskTolerance instead)
 	MinSpread        float64 // Minimum spread percentage to consider a trade
 	MaxSpread        float64 // Maximum spread percentage to consider a trade
+	RiskTolerance    float64 // Risk tolerance: fraction of balance to risk per trade (0.0 to 1.0)
 }
 
 // BaseStrategy provides common functionality for all strategies
@@ -62,9 +63,38 @@ func NewBaseStrategy(engine *trading.PaperTradingEngine) *BaseStrategy {
 			MaxPositionSize:  1000.0,
 			MinSpread:        0.5,  // At least 0.5% spread to be worth trading
 			MaxSpread:        50.0, // Don't trade if spread is >50% (likely misprice or illiquid)
+			RiskTolerance:    0.1,  // Default: risk 10% of balance per trade
 		},
 		Engine: engine,
 	}
+}
+
+// GetDynamicPositionSize calculates the maximum position size based on current balance and risk tolerance
+// If RiskTolerance is 1.0, can risk entire balance per trade
+// If RiskTolerance is 0.1, typical trade is ~10% of balance
+// If RiskTolerance is 0.05, typical trade is ~5% of balance
+func (bs *BaseStrategy) GetDynamicPositionSize() float64 {
+	if bs.Engine == nil {
+		return bs.Config.MaxPositionSize
+	}
+	
+	currentBalance := bs.Engine.GetBalance()
+	riskTolerance := bs.Config.RiskTolerance
+	
+	// If RiskTolerance is 0 or negative, fall back to MaxPositionSize
+	if riskTolerance <= 0 {
+		return bs.Config.MaxPositionSize
+	}
+	
+	// Maximum position size is balance * risk tolerance
+	dynamicSize := currentBalance * riskTolerance
+	
+	// Don't exceed the legacy MaxPositionSize if it's set
+	if bs.Config.MaxPositionSize > 0 && dynamicSize > bs.Config.MaxPositionSize {
+		dynamicSize = bs.Config.MaxPositionSize
+	}
+	
+	return dynamicSize
 }
 
 // Evaluate is a default implementation that does nothing - subclasses should override

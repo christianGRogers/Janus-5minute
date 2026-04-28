@@ -55,7 +55,7 @@ func main() {
 			EnablePriceStaleness:  cfg.PaperTradingRealistic.EnablePriceStaleness,
 			MaxPriceStalenessBps:  cfg.PaperTradingRealistic.MaxPriceStalenessBps,
 		}
-		tradingEngine = trading.NewPaperTradingEngineWithConfig(10000.0, realisticCfg) // Start with 10,000 USDC
+		tradingEngine = trading.NewPaperTradingEngineWithConfig(20, realisticCfg) // Start with 10,000 USDC
 	} else {
 		log.Println("Live trading mode enabled")
 		// TODO: Create live trading engine with real order placement
