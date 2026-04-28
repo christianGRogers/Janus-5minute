@@ -31,7 +31,7 @@ type LateEntryStrategy struct {
 func NewLateEntryStrategy(engine *trading.PaperTradingEngine) *LateEntryStrategy {
 	log.Printf("Initializing LateEntryStrategy with parameters: minBuyPrice=%.2f, maxSellPrice=%.2f, minWinConfidence=%.2f, extremeConfidence=%.2f",
 		0.75, 0.25, 0.75, 0.98,)
-	return &LateEntryStrategy{
+	strategy := &LateEntryStrategy{
 		BaseStrategy:        NewBaseStrategy(engine),
 		windowStartTime:     time.Now(),
 		lastCheckTime:       time.Now(),
@@ -41,6 +41,8 @@ func NewLateEntryStrategy(engine *trading.PaperTradingEngine) *LateEntryStrategy
 		minWinConfidence:    0.75,        // 25% distance from 0.50 midpoint
 		extremeConfidence:   0.98,        // Only trade at extreme certainty
 	}
+	strategy.Config.MaxPositionSize = 100.0
+	return strategy
 }
 
 // Name returns the strategy name
