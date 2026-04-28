@@ -81,7 +81,7 @@ func main() {
 	// Set market close handler to resolve positions when markets transition
 	fetcher.SetMarketCloseHandler(func(removedMarkets []string, finalPrices map[string]*polymarket.MarketBook) {
 		if tradingEngine != nil {
-			log.Printf("\n📍 Market Window Ended - Closing %d positions:\n", len(removedMarkets))
+			log.Printf("\n📍 Market Window Ended - Closing %d markets:\n", len(removedMarkets))
 			totalPnL := 0.0
 			for _, marketID := range removedMarkets {
 				// Determine which outcome won based on final prices
@@ -99,40 +99,36 @@ func main() {
 					downFinalPrice = downBook.BestBidParsed
 				}
 				
-				// Determine which outcome won: the one trading near 0.99
-				var exitPrice float64
-				var winningOutcome string
-				if upFinalPrice > downFinalPrice {
-					// UP won (≈0.99, worth $1)
-					exitPrice = 1.0
-					winningOutcome = "UP"
-				} else {
-					// DOWN won (≈0.99, worth $1), UP is worth $0
-					exitPrice = 0.0
-					winningOutcome = "DOWN"
-				}
-				
-				// Close position at the resolved value
-				closedPositions := tradingEngine.CloseMarketPositions(marketID, exitPrice)
-				for _, pos := range closedPositions {
+				// Close UP positions at appropriate price
+				upClosedPositions := tradingEngine.CloseMarketPositionsByOutcome(marketID, "UP", upFinalPrice)
+				for _, pos := range upClosedPositions {
 					status := "📈"
 					if pos.NetProfitLoss < 0 {
 						status = "📉"
 					}
-					outcome := "correct ✅"
-					if (pos.Outcome == "UP" && winningOutcome != "UP") || (pos.Outcome == "DOWN" && winningOutcome != "DOWN") {
-						outcome = "lost ❌"
+					fmt.Printf("%s Market %s (%s): Entry %.2f → Exit %.2f | Gross: $%.2f | Fees: $%.2f | Net P&L: $%.2f (%.1f%%)\n",
+						status, pos.MarketID, pos.Outcome, pos.EntryPrice, pos.ExitPrice, pos.ProfitLoss, pos.EntryFee+pos.ExitFee, pos.NetProfitLoss, pos.ProfitPct)
+					totalPnL += pos.NetProfitLoss
+				}
+				
+				// Close DOWN positions at appropriate price
+				downClosedPositions := tradingEngine.CloseMarketPositionsByOutcome(marketID, "DOWN", downFinalPrice)
+				for _, pos := range downClosedPositions {
+					status := "📈"
+					if pos.NetProfitLoss < 0 {
+						status = "📉"
 					}
-					fmt.Printf("%s Market %s (%s) %s: Entry %.2f → Exit %.2f | Gross: $%.2f | Fees: $%.2f | Net P&L: $%.2f (%.1f%%)\n",
-						status, pos.MarketID, pos.Outcome, outcome, pos.EntryPrice, pos.ExitPrice, pos.ProfitLoss, pos.EntryFee+pos.ExitFee, pos.NetProfitLoss, pos.ProfitPct)
+					fmt.Printf("%s Market %s (%s): Entry %.2f → Exit %.2f | Gross: $%.2f | Fees: $%.2f | Net P&L: $%.2f (%.1f%%)\n",
+						status, pos.MarketID, pos.Outcome, pos.EntryPrice, pos.ExitPrice, pos.ProfitLoss, pos.EntryFee+pos.ExitFee, pos.NetProfitLoss, pos.ProfitPct)
 					totalPnL += pos.NetProfitLoss
 				}
 
 				// Log market closure to analytics
-				if marketLogger != nil && len(closedPositions) > 0 {
+				allClosedPositions := append(upClosedPositions, downClosedPositions...)
+				if marketLogger != nil && len(allClosedPositions) > 0 {
 					if err := marketLogger.LogMarketClosure(
 						marketID,
-						closedPositions,
+						allClosedPositions,
 						finalPrices,
 						tradingEngine.GetBalance(),
 						tradingEngine.GetCumulativeProfit(),

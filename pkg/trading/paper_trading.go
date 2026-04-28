@@ -486,6 +486,59 @@ func (p *PaperTradingEngine) CloseMarketPositions(marketID string, exitPrice flo
 	return closedPos
 }
 
+// CloseMarketPositionsByOutcome closes positions for a given market and outcome type at a specific exit price
+// This handles multiple outcomes (UP/DOWN) per market
+// Returns closed positions and their P&L (after fees)
+func (p *PaperTradingEngine) CloseMarketPositionsByOutcome(marketID string, outcome string, exitPrice float64) []*ClosedPosition {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var closedPos []*ClosedPosition
+
+	if pos, exists := p.positions[marketID]; exists && pos.Direction == outcome {
+		// Calculate entry and exit fees using Polymarket formula
+		entryFee := calculateTakerFee(pos.Size, pos.AvgPrice)
+		exitFee := calculateTakerFee(pos.Size, exitPrice)
+		totalFees := entryFee + exitFee
+
+		// Record closed position
+		closed := &ClosedPosition{
+			MarketID:   marketID,
+			Outcome:    pos.Direction,
+			EntryPrice: pos.AvgPrice,
+			ExitPrice:  exitPrice,
+			Size:       pos.Size,
+			EntryTime:  pos.EntryTime,
+			ExitTime:   time.Now().Unix(),
+			EntryFee:   entryFee,
+			ExitFee:    exitFee,
+		}
+
+		// Calculate P&L before fees
+		if pos.Side == "BUY" {
+			closed.ProfitLoss = (exitPrice - pos.AvgPrice) * pos.Size
+		} else {
+			closed.ProfitLoss = (pos.AvgPrice - exitPrice) * pos.Size
+		}
+
+		// Calculate net P&L after fees
+		closed.NetProfitLoss = closed.ProfitLoss - totalFees
+		closed.ProfitPct = (closed.NetProfitLoss / (pos.AvgPrice * pos.Size)) * 100
+
+		p.closedPositions = append(p.closedPositions, closed)
+		closedPos = append(closedPos, closed)
+		p.cumulativeProfit += closed.NetProfitLoss
+
+		// Update balance with net P&L
+		p.balance += closed.NetProfitLoss
+
+		// Remove position
+		delete(p.positions, marketID)
+	}
+
+	return closedPos
+}
+
 // GetClosedPositions returns all closed positions
 func (p *PaperTradingEngine) GetClosedPositions() []*ClosedPosition {
 	p.mu.RLock()
