@@ -14,6 +14,7 @@ type TradeSignal struct {
 	Price            float64 // Execution price
 	Size             float64 // Position size
 	AvailableLiquidity float64 // Available liquidity for slippage calculation
+	Outcome          string  // Position type (UP or DOWN)
 }
 
 // Strategy defines the interface for trading strategies
