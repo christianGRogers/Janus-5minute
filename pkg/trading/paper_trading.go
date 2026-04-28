@@ -209,6 +209,11 @@ func (p *PaperTradingEngine) PlaceOrder(marketID string, side string, price floa
 
 // PlaceOrderWithMetadata places an order with optional available liquidity metadata for slippage calculation
 func (p *PaperTradingEngine) PlaceOrderWithMetadata(marketID string, side string, price float64, size float64, availableLiquidity float64) (string, error) {
+	return p.PlaceOrderWithOutcome(marketID, side, price, size, availableLiquidity, "")
+}
+
+// PlaceOrderWithOutcome places an order with outcome type (UP/DOWN) and optional liquidity metadata
+func (p *PaperTradingEngine) PlaceOrderWithOutcome(marketID string, side string, price float64, size float64, availableLiquidity float64, outcome string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -261,10 +266,14 @@ func (p *PaperTradingEngine) PlaceOrderWithMetadata(marketID string, side string
 
 	// Update position
 	posKey := marketID
-	// Extract direction from market slug (e.g., "btc-updown-5m-XXXXX-UP" or "btc-updown-5m-XXXXX-DOWN")
-	direction := "UP"
-	if len(marketID) > 3 && marketID[len(marketID)-4:] == "DOWN" {
-		direction = "DOWN"
+	// Extract direction from outcome parameter or market slug
+	direction := outcome
+	if direction == "" {
+		// Fallback: Extract from market slug (e.g., "btc-updown-5m-XXXXX-UP" or "btc-updown-5m-XXXXX-DOWN")
+		direction = "UP"
+		if len(marketID) > 3 && marketID[len(marketID)-4:] == "DOWN" {
+			direction = "DOWN"
+		}
 	}
 	
 	if pos, exists := p.positions[posKey]; exists {

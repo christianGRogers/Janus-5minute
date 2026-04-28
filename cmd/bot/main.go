@@ -210,12 +210,12 @@ func main() {
 			if strategy != nil && len(books) > 0 {
 				signal := strategy.EvaluateV2(books)
 				if signal.ShouldTrade {
-					// Place order with metadata for slippage calculation
-					orderID, err := tradingEngine.PlaceOrderWithMetadata(signal.MarketID, signal.Side, signal.Price, signal.Size, signal.AvailableLiquidity)
+					// Place order with metadata for slippage calculation and outcome type
+					orderID, err := tradingEngine.PlaceOrderWithOutcome(signal.MarketID, signal.Side, signal.Price, signal.Size, signal.AvailableLiquidity, signal.Outcome)
 					if err != nil {
 						log.Printf("❌ Strategy order failed: %v", err)
 					} else {
-						log.Printf("✅ %s Strategy placed %s order: %s @ %.2f x %.0f shares", strategy.Name(), signal.Side, orderID, signal.Price, signal.Size)
+						log.Printf("✅ %s Strategy placed %s order: %s @ %.2f x %.0f shares (%s)", strategy.Name(), signal.Side, orderID, signal.Price, signal.Size, signal.Outcome)
 					}
 				}
 			}

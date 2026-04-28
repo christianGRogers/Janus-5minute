@@ -210,11 +210,12 @@ func (leud *LateEntryUpDownStrategy) EvaluateV2(markets map[string]*polymarket.M
 					leud.positionsThisWindow[positionKey] = true
 					return &TradeSignal{
 						ShouldTrade:        true,
-						MarketID:           marketID + "-" + outcome,
+						MarketID:           marketID,
 						Side:               "BUY",
 						Price:              book.BestAskParsed,
 						Size:               positionSize,
 						AvailableLiquidity: book.BestAskSizeParsed,
+						Outcome:            outcome,
 					}
 				}
 			}
@@ -231,11 +232,12 @@ func (leud *LateEntryUpDownStrategy) EvaluateV2(markets map[string]*polymarket.M
 					leud.positionsThisWindow[positionKey] = true
 					return &TradeSignal{
 						ShouldTrade:        true,
-						MarketID:           marketID + "-" + outcome,
+						MarketID:           marketID,
 						Side:               "SELL",
 						Price:              book.BestBidParsed,
 						Size:               positionSize,
 						AvailableLiquidity: book.BestBidSizeParsed,
+						Outcome:            outcome,
 					}
 				}
 			}
@@ -258,11 +260,12 @@ func (leud *LateEntryUpDownStrategy) EvaluateV2(markets map[string]*polymarket.M
 				leud.positionsThisWindow[positionKey] = true
 				return &TradeSignal{
 					ShouldTrade:        true,
-					MarketID:           marketID + "-" + outcome,
+					MarketID:           marketID,
 					Side:               "BUY",
 					Price:              book.BestAskParsed,
 					Size:               positionSize,
 					AvailableLiquidity: book.BestAskSizeParsed,
+					Outcome:            outcome,
 				}
 			}
 		}
@@ -280,11 +283,12 @@ func (leud *LateEntryUpDownStrategy) EvaluateV2(markets map[string]*polymarket.M
 				leud.positionsThisWindow[positionKey] = true
 				return &TradeSignal{
 					ShouldTrade:        true,
-					MarketID:           marketID + "-" + outcome,
+					MarketID:           marketID,
 					Side:               "SELL",
 					Price:              book.BestBidParsed,
 					Size:               positionSize,
 					AvailableLiquidity: book.BestBidSizeParsed,
+					Outcome:            outcome,
 				}
 			}
 		}

@@ -210,6 +210,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 						Price:              book.BestAskParsed,
 						Size:               positionSize,
 						AvailableLiquidity: book.BestAskSizeParsed,
+						Outcome:            "UP",
 					}
 				}
 			}
@@ -231,6 +232,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 						Price:              book.BestBidParsed,
 						Size:               positionSize,
 						AvailableLiquidity: book.BestBidSizeParsed,
+						Outcome:            "UP",
 					}
 				}
 			}
@@ -258,6 +260,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 					Price:              book.BestAskParsed,
 					Size:               positionSize,
 					AvailableLiquidity: book.BestAskSizeParsed,
+					Outcome:            "UP",
 				}
 			}
 		}
@@ -280,6 +283,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 					Price:              book.BestBidParsed,
 					Size:               positionSize,
 					AvailableLiquidity: book.BestBidSizeParsed,
+					Outcome:            "UP",
 				}
 			}
 		}
