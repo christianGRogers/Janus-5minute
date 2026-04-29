@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -122,17 +121,16 @@ func NewLiveTradingEngine(client *polymarket.Client, apiKey, passphrase, private
 
 // GetBalance fetches the real balance from the Polymarket API
 func (lte *LiveTradingEngine) GetBalance() float64 {
-	lte.mu.RLock()
-	defer lte.mu.RUnlock()
+	lte.mu.Lock()
+	defer lte.mu.Unlock()
 
 	// If we cached balance recently, return it (within 30 seconds)
 	if time.Since(lte.lastBalanceTime) < 30*time.Second && lte.lastBalance > 0 {
 		return lte.lastBalance
 	}
 
-	lte.mu.RUnlock()
+	// Fetch fresh balance from API
 	balance := lte.fetchBalanceFromAPI()
-	lte.mu.Lock()
 	lte.lastBalance = balance
 	lte.lastBalanceTime = time.Now()
 	return balance
@@ -226,11 +224,10 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 		return "", fmt.Errorf("invalid size: %.2f (must be positive)", size)
 	}
 
-	// Check balance
-	currentBalance := lte.GetBalance()
+	// Check balance (use the cached value without acquiring lock again)
 	requiredBalance := price * size
-	if side == "BUY" && requiredBalance > currentBalance {
-		return "", fmt.Errorf("insufficient balance: required %.2f USDC, have %.2f USDC", requiredBalance, currentBalance)
+	if side == "BUY" && requiredBalance > lte.lastBalance {
+		return "", fmt.Errorf("insufficient balance: required %.2f USDC, have %.2f USDC", requiredBalance, lte.lastBalance)
 	}
 
 	// Create order payload
@@ -370,7 +367,7 @@ func (lte *LiveTradingEngine) signOrder(payload *OrderPayload) (string, error) {
 	// For now, use HMAC-SHA256 as placeholder
 	// This should use the private key to sign the EIP-712 typed data
 
-	msgToSign := fmt.Sprintf("%s%s%s%s%s%s%s%s",
+	msgToSign := fmt.Sprintf("%s%s%s%s%s%s%s%d",
 		payload.Maker,
 		payload.Signer,
 		payload.TokenID,
