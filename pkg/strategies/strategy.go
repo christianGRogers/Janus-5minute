@@ -52,11 +52,11 @@ type StrategyConfig struct {
 // BaseStrategy provides common functionality for all strategies
 type BaseStrategy struct {
 	Config StrategyConfig
-	Engine *trading.PaperTradingEngine
+	Engine trading.TradingEngine
 }
 
 // NewBaseStrategy creates a new base strategy with default config
-func NewBaseStrategy(engine *trading.PaperTradingEngine) *BaseStrategy {
+func NewBaseStrategy(engine trading.TradingEngine) *BaseStrategy {
 	return &BaseStrategy{
 		Config: StrategyConfig{
 			MinLiquidityUSDC: 10000.0,

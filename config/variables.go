@@ -28,9 +28,11 @@ func DefaultPaperTradingRealistic() *PaperTradingRealisticConfig {
 // PolymarketConfig holds static variables for Polymarket API configuration
 type PolymarketConfig struct {
 	// API Configuration
-	ClibAPIEndpoint string
-	ApiKey          string
-	PrivateKey      string
+	ClibAPIEndpoint string // CLOB API endpoint (for order placement)
+	ApiKey          string // API key ID (UUID)
+	Passphrase      string // API key passphrase (for CLOB orders)
+	PrivateKey      string // Ed25519 private key, hex-encoded (32 or 64 bytes)
+	Address         string // Ethereum address
 
 	// Market Configuration
 	Markets []MarketConfig
@@ -62,7 +64,9 @@ func DefaultConfig() *PolymarketConfig {
 	return &PolymarketConfig{
 		ClibAPIEndpoint:     "https://clob.polymarket.com",
 		ApiKey:              "YOUR_API_KEY_HERE",
+		Passphrase:          "YOUR_PASSPHRASE_HERE",
 		PrivateKey:          "YOUR_PRIVATE_KEY_HERE",
+		Address:             "YOUR_ETH_ADDRESS_HERE",
 		PaperTradingEnabled: true,
 		OrderGasLimit:       500000,
 		OrderChainID:        137, // Polygon mainnet

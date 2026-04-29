@@ -38,7 +38,7 @@ func main() {
 	})
 
 	// Create trading engine
-	var tradingEngine *trading.PaperTradingEngine
+	var tradingEngine trading.TradingEngine
 
 	if cfg.PaperTradingEnabled {
 		log.Println("Paper trading mode enabled")
@@ -55,19 +55,27 @@ func main() {
 			EnablePriceStaleness:  cfg.PaperTradingRealistic.EnablePriceStaleness,
 			MaxPriceStalenessBps:  cfg.PaperTradingRealistic.MaxPriceStalenessBps,
 		}
-		tradingEngine = trading.NewPaperTradingEngineWithConfig(20, realisticCfg) // Start with 10,000 USDC
+		tradingEngine = trading.NewPaperTradingEngineWithConfig(20, realisticCfg) // Start with 20 USDC
 	} else {
 		log.Println("Live trading mode enabled")
-		// TODO: Create live trading engine with real order placement
-		// tradingEngine = trading.NewLiveTrading(client, cfg)
+		log.Println("🚀 Connecting to Polymarket live API...")
+		
+		// Create live trading engine
+		// Balance will be fetched from the API
+		tradingEngine = trading.NewLiveTradingEngine(
+			client,
+			cfg.ApiKey,
+			cfg.Passphrase,
+			cfg.PrivateKey,
+			cfg.Address,
+		)
+		log.Printf("✅ Live trading engine initialized for address: %s\n", cfg.Address)
 	}
 
 	// Create and initialize strategy
 	var strategy strategies.Strategy
-	if cfg.PaperTradingEnabled {
-		strategy = strategies.NewLateEntryStrategy(tradingEngine)
-		log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
-	}
+	strategy = strategies.NewLateEntryStrategy(tradingEngine)
+	log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
 
 	// Create market logger for analytics
 	marketLogger, err := analytics.NewMarketLogger(".")

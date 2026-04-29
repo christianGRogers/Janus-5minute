@@ -28,7 +28,7 @@ type LateEntryStrategy struct {
 }
 
 // NewLateEntryStrategy creates a new late entry strategy
-func NewLateEntryStrategy(engine *trading.PaperTradingEngine) *LateEntryStrategy {
+func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
 	log.Printf("Initializing LateEntryStrategy with parameters: minBuyPrice=%.2f, maxSellPrice=%.2f, minWinConfidence=%.2f, extremeConfidence=%.2f",
 		0.75, 0.25, 0.75, 0.98,)
 	strategy := &LateEntryStrategy{
