@@ -88,7 +88,7 @@ class BotPerformanceVisualizer:
     def _prepare_data(self):
         """Prepare data for visualization."""
         # Calculate accurate balance: starting balance (10000) + cumulative profit
-        starting_balance = 10000.0
+        starting_balance = 20.0
         self.df["calculated_balance"] = starting_balance + self.df["cumulative_profit_usdc"]
         self.starting_balance = starting_balance
         
@@ -370,7 +370,7 @@ class BotPerformanceVisualizer:
             linewidth=2.5,
             markersize=7,
             color="darkblue",
-            label="Account Balance (10000 + Cumulative Profit)",
+            label="Account Balance (20 + Cumulative Profit)",
         )
         
         # Add starting balance line
@@ -417,7 +417,7 @@ class BotPerformanceVisualizer:
         total_fees = self.df["total_fees_usdc"].sum()
         avg_trade_profit = total_profit / total_trades if total_trades > 0 else 0
         
-        # Use fixed starting balance of 10000
+        # Use fixed starting balance of 20
         starting_balance = self.starting_balance
         final_balance = self.df["calculated_balance"].iloc[-1]
         roi = ((final_balance - starting_balance) / starting_balance * 100)
