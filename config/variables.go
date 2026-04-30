@@ -1,5 +1,7 @@
 package config
 
+import "os"
+
 // PaperTradingRealisticConfig controls realism features for paper trading simulations
 type PaperTradingRealisticConfig struct {
 	// Slippage modeling: price impact from taking liquidity
@@ -61,6 +63,12 @@ type MarketConfig struct {
 
 // DefaultConfig returns a template configuration with placeholder values
 func DefaultConfig() *PolymarketConfig {
+	// Use Amoy testnet (80002) if DRY_RUN is enabled, otherwise use Polygon mainnet (137)
+	chainID := uint64(137) // Polygon mainnet by default
+	if os.Getenv("DRY_RUN") == "true" {
+		chainID = 80002 // Amoy testnet for dry-run
+	}
+	
 	return &PolymarketConfig{
 		ClibAPIEndpoint:     "https://clob.polymarket.com",
 		ApiKey:              "YOUR_API_KEY_HERE",
@@ -69,7 +77,7 @@ func DefaultConfig() *PolymarketConfig {
 		Address:             "YOUR_ETH_ADDRESS_HERE",
 		PaperTradingEnabled: true,
 		OrderGasLimit:       500000,
-		OrderChainID:        137, // Polygon mainnet
+		OrderChainID:        chainID,
 		PollIntervalSeconds: 1,
 		PaperTradingRealistic: DefaultPaperTradingRealistic(),
 		Markets: []MarketConfig{

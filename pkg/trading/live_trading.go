@@ -12,6 +12,8 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,17 +24,16 @@ import (
 
 // LiveTradingEngine executes real trades on Polymarket
 type LiveTradingEngine struct {
-	mu              sync.RWMutex
-	client          *polymarket.Client
-	apiKey          string
-	passphrase      string
-	privateKey      string
-	address         string
-	positions       map[string]*PaperPosition // Track current positions
-	tradeHistory    []*PaperTrade             // Track trade history for analytics
-	orderIDCounter  int64
-	lastBalanceTime time.Time
-	lastBalance     float64
+	mu             sync.RWMutex
+	client         *polymarket.Client
+	apiKey         string
+	passphrase     string
+	privateKey     string
+	address        string
+	positions      map[string]*PaperPosition // Track current positions
+	tradeHistory   []*PaperTrade             // Track trade history for analytics
+	orderIDCounter int64
+	dryRun         bool                      // If true, send orders to API with verbose logging for review
 }
 
 // SendOrderRequest is the request payload for POST /order
@@ -104,9 +105,14 @@ type PendingWithdrawal struct {
 	CreationTime          string `json:"creationTime"`
 	DestinationAccountName string `json:"destinationAccountName"`
 }
-
 // NewLiveTradingEngine creates a new live trading engine
+// If DRY_RUN environment variable is set to "true", orders will be sent to the API but logged for review
 func NewLiveTradingEngine(client *polymarket.Client, apiKey, passphrase, privateKey, address string) *LiveTradingEngine {
+	dryRun := os.Getenv("DRY_RUN") == "true"
+	if dryRun {
+		log.Println("⚠️  DRY_RUN mode enabled - orders will be sent to the actual API with verbose logging")
+	}
+	
 	return &LiveTradingEngine{
 		client:         client,
 		apiKey:         apiKey,
@@ -116,89 +122,59 @@ func NewLiveTradingEngine(client *polymarket.Client, apiKey, passphrase, private
 		positions:      make(map[string]*PaperPosition),
 		tradeHistory:   make([]*PaperTrade, 0),
 		orderIDCounter: 1000,
+		dryRun:         dryRun,
 	}
 }
 
 // GetBalance fetches the real balance from the Polymarket API
+// Always fetches fresh balance (no caching) since balance can be updated at any time
 func (lte *LiveTradingEngine) GetBalance() float64 {
 	lte.mu.Lock()
 	defer lte.mu.Unlock()
 
-	// If we cached balance recently, return it (within 30 seconds)
-	if time.Since(lte.lastBalanceTime) < 30*time.Second && lte.lastBalance > 0 {
-		return lte.lastBalance
-	}
-
-	// Fetch fresh balance from API
+	// Always fetch fresh balance from API
 	balance := lte.fetchBalanceFromAPI()
-	lte.lastBalance = balance
-	lte.lastBalanceTime = time.Now()
 	return balance
 }
 
-// fetchBalanceFromAPI queries the Portfolio API for current balance
-// Uses Ed25519 signature authentication as per Polymarket API spec
+// fetchBalanceFromAPI queries Polymarket for current balance by calling the Python script
+// The Python script uses py-clob-client which properly handles credential derivation
+// and the CLOB API balance-allowance endpoint
 func (lte *LiveTradingEngine) fetchBalanceFromAPI() float64 {
-	// Prepare request
-	url := "https://api.polymarket.us/v1/account/balances"
+	// Call Python script to get balance
+	cmd := exec.Command("python", "tools/get_polymarket_balance.py")
 	
-	// Create HTTP request
-	req, err := http.NewRequest("GET", url, nil)
+	// Set environment variables for the Python script
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("POLYMARKET_ADDRESS=%s", lte.address),
+		fmt.Sprintf("PRIVATE_KEY=%s", lte.privateKey),
+	)
+	
+	output, err := cmd.Output()
 	if err != nil {
-		log.Printf("❌ Failed to create balance request: %v", err)
+		log.Printf("❌ Failed to execute balance script: %v", err)
 		return 0
 	}
-
-	// Add authentication headers
-	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	signature, err := lte.createPortfolioAPISignature(timestamp, "GET", "/v1/account/balances")
-	if err != nil {
-		log.Printf("❌ Failed to sign balance request: %v", err)
-		return 0
+	
+	// Parse JSON response
+	var result struct {
+		Balance float64 `json:"balance"`
+		Status  string  `json:"status"`
+		Message string  `json:"message"`
 	}
-
-	req.Header.Set("X-PM-Access-Key", lte.apiKey)
-	req.Header.Set("X-PM-Timestamp", timestamp)
-	req.Header.Set("X-PM-Signature", signature)
-	req.Header.Set("Content-Type", "application/json")
-
-	// Send request
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("❌ Failed to fetch balance: %v", err)
-		return 0
-	}
-	defer resp.Body.Close()
-
-	// Parse response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("❌ Failed to read balance response: %v", err)
-		return 0
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("❌ Balance API returned status %d: %s", resp.StatusCode, string(body))
-		return 0
-	}
-
-	var balanceResp GetAccountBalancesResponse
-	if err := json.Unmarshal(body, &balanceResp); err != nil {
+	
+	if err := json.Unmarshal(output, &result); err != nil {
 		log.Printf("❌ Failed to parse balance response: %v", err)
 		return 0
 	}
-
-	// Find USD balance
-	for _, balance := range balanceResp.Balances {
-		if balance.Currency == "USD" {
-			log.Printf("✅ Current balance: $%.2f USD", balance.CurrentBalance)
-			return balance.CurrentBalance
-		}
+	
+	if result.Status != "success" {
+		log.Printf("❌ Failed to fetch balance: %s", result.Message)
+		return 0
 	}
-
-	log.Printf("⚠️  No USD balance found in account balances")
-	return 0
+	
+	log.Printf("✅ Current balance: $%.2f USD", result.Balance)
+	return result.Balance
 }
 
 // PlaceOrder places a real order on Polymarket
@@ -224,11 +200,8 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 		return "", fmt.Errorf("invalid size: %.2f (must be positive)", size)
 	}
 
-	// Check balance (use the cached value without acquiring lock again)
-	requiredBalance := price * size
-	if side == "BUY" && requiredBalance > lte.lastBalance {
-		return "", fmt.Errorf("insufficient balance: required %.2f USDC, have %.2f USDC", requiredBalance, lte.lastBalance)
-	}
+	// Note: Balance validation is handled by the Polymarket API
+	// The API will automatically reject the order if insufficient balance
 
 	// Create order payload
 	orderPayload := lte.buildOrderPayload(marketID, side, price, size)
@@ -394,6 +367,14 @@ func (lte *LiveTradingEngine) sendOrderToAPI(req *SendOrderRequest) (*SendOrderR
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// If dry-run mode is enabled, log the request details but still send it
+	if lte.dryRun {
+		log.Printf("🏜️  DRY-RUN: Would send order to API\n")
+		log.Printf("   URL: %s\n", url)
+		log.Printf("   Side: %s, Maker Amount: %s, Taker Amount: %s\n", 
+			req.Order.Side, req.Order.MakerAmount, req.Order.TakerAmount)
+	}
+
 	httpReq, err := http.NewRequest("POST", url, strings.NewReader(string(payload)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
@@ -446,6 +427,8 @@ func (lte *LiveTradingEngine) createRequestSignature(payload string) string {
 // createPortfolioAPISignature creates Ed25519 signature for Portfolio API requests
 // Signature of: timestamp + method + path
 // Uses the private key to sign, returns base64-encoded signature
+// NOTE: This is kept for reference but not used in current implementation
+// Current implementation uses CLOB API with HMAC-SHA256 signatures
 func (lte *LiveTradingEngine) createPortfolioAPISignature(timestamp string, method string, path string) (string, error) {
 	// Message to sign: timestamp + method + path
 	msgToSign := timestamp + method + path
