@@ -65,6 +65,7 @@ func main() {
 		tradingEngine = trading.NewLiveTradingEngine(
 			client,
 			cfg.ApiKey,
+			cfg.ApiSecret,
 			cfg.Passphrase,
 			cfg.PrivateKey,
 			cfg.Address,

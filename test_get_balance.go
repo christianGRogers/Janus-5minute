@@ -32,8 +32,8 @@ func main() {
 
 	// Create a new live trading engine
 	// CLOB API only needs address and privateKey for authentication
-	// apiKey and passphrase are not used for balance-allowance endpoint
-	engine := trading.NewLiveTradingEngine(client, "", "", privateKey, address)
+	// apiKey, apiSecret and passphrase are not used for balance-allowance endpoint
+	engine := trading.NewLiveTradingEngine(client, "", "", "", privateKey, address)
 
 	// Fetch and display balance
 	balance := engine.GetBalance()

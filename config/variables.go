@@ -32,6 +32,7 @@ type PolymarketConfig struct {
 	// API Configuration
 	ClibAPIEndpoint string // CLOB API endpoint (for order placement)
 	ApiKey          string // API key ID (UUID)
+	ApiSecret       string // API secret (for CLOB orders)
 	Passphrase      string // API key passphrase (for CLOB orders)
 	PrivateKey      string // Ed25519 private key, hex-encoded (32 or 64 bytes)
 	Address         string // Ethereum address
@@ -72,6 +73,7 @@ func DefaultConfig() *PolymarketConfig {
 	return &PolymarketConfig{
 		ClibAPIEndpoint:     "https://clob.polymarket.com",
 		ApiKey:              "YOUR_API_KEY_HERE",
+		ApiSecret:           "YOUR_API_SECRET_HERE",
 		Passphrase:          "YOUR_PASSPHRASE_HERE",
 		PrivateKey:          "YOUR_PRIVATE_KEY_HERE",
 		Address:             "YOUR_ETH_ADDRESS_HERE",

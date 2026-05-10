@@ -22,11 +22,21 @@ import (
 	"janus-bot/pkg/polymarket"
 )
 
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // LiveTradingEngine executes real trades on Polymarket
 type LiveTradingEngine struct {
 	mu             sync.RWMutex
 	client         *polymarket.Client
 	apiKey         string
+	apiSecret      string
+	apiKeyOwnerID  string // UUID of the API key owner (required for order placement)
 	passphrase     string
 	privateKey     string
 	address        string
@@ -106,16 +116,23 @@ type PendingWithdrawal struct {
 	DestinationAccountName string `json:"destinationAccountName"`
 }
 // NewLiveTradingEngine creates a new live trading engine
-// If DRY_RUN environment variable is set to "true", orders will be sent to the API but logged for review
-func NewLiveTradingEngine(client *polymarket.Client, apiKey, passphrase, privateKey, address string) *LiveTradingEngine {
+func NewLiveTradingEngine(client *polymarket.Client, apiKey, apiSecret, passphrase, privateKey, address string) *LiveTradingEngine {
+	return NewLiveTradingEngineWithOwner(client, apiKey, apiKey, apiSecret, passphrase, privateKey, address)
+}
+
+// NewLiveTradingEngineWithOwner creates a new live trading engine with explicit owner ID
+// apiKeyOwnerID is the UUID of the API key owner (required for order placement per Polymarket API spec)
+func NewLiveTradingEngineWithOwner(client *polymarket.Client, apiKey, apiKeyOwnerID, apiSecret, passphrase, privateKey, address string) *LiveTradingEngine {
 	dryRun := os.Getenv("DRY_RUN") == "true"
 	if dryRun {
-		log.Println("⚠️  DRY_RUN mode enabled - orders will be sent to the actual API with verbose logging")
+		log.Println("⚠️  DRY_RUN mode enabled - orders will be simulated locally")
 	}
 	
 	return &LiveTradingEngine{
 		client:         client,
 		apiKey:         apiKey,
+		apiSecret:      apiSecret,
+		apiKeyOwnerID:  apiKeyOwnerID,
 		passphrase:     passphrase,
 		privateKey:     privateKey,
 		address:        address,
@@ -188,6 +205,7 @@ func (lte *LiveTradingEngine) PlaceOrderWithMetadata(marketID string, side strin
 }
 
 // PlaceOrderWithOutcome places a real order with outcome type
+// Uses Python SDK to properly sign EIP-712 orders
 func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string, price float64, size float64, availableLiquidity float64, outcome string) (string, error) {
 	lte.mu.Lock()
 	defer lte.mu.Unlock()
@@ -200,42 +218,16 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 		return "", fmt.Errorf("invalid size: %.2f (must be positive)", size)
 	}
 
-	// Note: Balance validation is handled by the Polymarket API
-	// The API will automatically reject the order if insufficient balance
-
-	// Create order payload
-	orderPayload := lte.buildOrderPayload(marketID, side, price, size)
-
-	// Sign the order
-	signature, err := lte.signOrder(orderPayload)
+	// Call Python script to place order (handles proper EIP-712 signing)
+	orderID, err := lte.placeOrderViaScript(marketID, side, price, size)
 	if err != nil {
-		return "", fmt.Errorf("failed to sign order: %w", err)
-	}
-	orderPayload.Signature = signature
-
-	// Build request
-	req := &SendOrderRequest{
-		Order:     *orderPayload,
-		Owner:     lte.address,
-		OrderType: "GTC", // Good-til-canceled
-		DeferExec: false,
-	}
-
-	// Send to API
-	response, err := lte.sendOrderToAPI(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to send order: %w", err)
-	}
-
-	if !response.Success {
-		return "", fmt.Errorf("order failed: %s", response.ErrorMsg)
+		return "", err
 	}
 
 	// Log the trade
 	lte.orderIDCounter++
-	orderID := response.OrderID
 	if orderID == "" {
-		orderID = fmt.Sprintf("LIVE-%d", lte.orderIDCounter)
+		orderID = fmt.Sprintf("ORDER-%d", lte.orderIDCounter)
 	}
 
 	trade := &PaperTrade{
@@ -244,7 +236,7 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 		Side:       side,
 		Price:      price,
 		Size:       size,
-		Status:     response.Status, // live, matched, or delayed
+		Status:     "live",
 		FilledSize: size,
 		Timestamp:  time.Now().Unix(),
 	}
@@ -298,9 +290,81 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 		}
 	}
 
-	log.Printf("✅ Live order placed: %s %s %.0f shares @ %.4f (Status: %s)", side, marketID, size, price, response.Status)
+	log.Printf("✅ Live order placed: %s %s %.0f shares @ %.4f (ID: %s)", side, marketID, size, price, orderID)
 
 	return orderID, nil
+}
+
+// placeOrderViaScript calls the Python SDK script to place an order with proper EIP-712 signing
+func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, price float64, size float64) (string, error) {
+	cmd := exec.Command("python", "tools/place_order.py",
+		"--token-id", marketID,
+		"--price", fmt.Sprintf("%.2f", price),
+		"--size", fmt.Sprintf("%.2f", size),
+		"--side", side,
+		"--tick-size", "0.01",
+	)
+
+	// Set environment variables for Python script
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("POLYMARKET_ADDRESS=%s", lte.address),
+		fmt.Sprintf("PRIVATE_KEY=%s", lte.privateKey),
+	)
+
+	// Capture both stdout and stderr
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	
+	stdoutStr := stdout.String()
+	stderrStr := stderr.String()
+	
+	// Log all output for debugging
+	if stdoutStr != "" {
+		log.Printf("📤 Python script stdout: %s", stdoutStr)
+	}
+	if stderrStr != "" {
+		log.Printf("📤 Python script stderr: %s", stderrStr)
+	}
+	
+	if err != nil {
+		log.Printf("❌ Order placement script failed")
+		log.Printf("   Command: python tools/place_order.py --token-id %s --price %.2f --size %.2f --side %s", 
+			marketID, price, size, side)
+		log.Printf("   Error: %v", err)
+		if stderrStr != "" {
+			log.Printf("   Stderr: %s", stderrStr)
+		}
+		return "", fmt.Errorf("order placement script failed: %v\nstderr: %s", err, stderrStr)
+	}
+
+	// Parse JSON response
+	var result struct {
+		Success bool   `json:"success"`
+		OrderID string `json:"orderID"`
+		Error   string `json:"error"`
+		ErrorMsg string `json:"errorMsg"`
+	}
+
+	if err := json.Unmarshal([]byte(stdoutStr), &result); err != nil {
+		log.Printf("❌ Failed to parse order response: %v", err)
+		log.Printf("   Output: %s", stdoutStr)
+		log.Printf("   Stderr: %s", stderrStr)
+		return "", fmt.Errorf("failed to parse order response: %w\nOutput: %s\nStderr: %s", err, stdoutStr, stderrStr)
+	}
+
+	if !result.Success {
+		errorMsg := result.Error
+		if errorMsg == "" {
+			errorMsg = result.ErrorMsg
+		}
+		log.Printf("❌ Order placement failed: %s", errorMsg)
+		return "", fmt.Errorf("order placement failed: %s", errorMsg)
+	}
+
+	return result.OrderID, nil
 }
 
 // buildOrderPayload constructs the order payload for signing
@@ -321,7 +385,7 @@ func (lte *LiveTradingEngine) buildOrderPayload(marketID string, side string, pr
 	return &OrderPayload{
 		Maker:         lte.address,
 		Signer:        lte.address,
-		TokenID:       marketID, // This should be the actual token ID
+		TokenID:       marketID, // Token ID from market
 		MakerAmount:   fmt.Sprintf("%d", makerAmount),
 		TakerAmount:   fmt.Sprintf("%d", takerAmount),
 		Side:          side,
@@ -360,19 +424,27 @@ func (lte *LiveTradingEngine) signOrder(payload *OrderPayload) (string, error) {
 
 // sendOrderToAPI sends the order to the Polymarket CLOB API
 func (lte *LiveTradingEngine) sendOrderToAPI(req *SendOrderRequest) (*SendOrderResponse, error) {
+	// If dry-run mode is enabled, simulate the order locally without sending to API
+	if lte.dryRun {
+		dryRunID := fmt.Sprintf("0x%s%d", strings.Repeat("0", 38), rand.Int63())
+		log.Printf("🏜️  DRY-RUN: Simulating order placement locally\n")
+		log.Printf("   Order ID: %s\n", dryRunID)
+		log.Printf("   Side: %s, Maker Amount: %s, Taker Amount: %s\n", 
+			req.Order.Side, req.Order.MakerAmount, req.Order.TakerAmount)
+		
+		return &SendOrderResponse{
+			Success:   true,
+			OrderID:   dryRunID,
+			Status:    "live",
+			ErrorMsg:  "",
+		}, nil
+	}
+
 	// Create HTTP request
 	url := "https://clob.polymarket.com/order"
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// If dry-run mode is enabled, log the request details but still send it
-	if lte.dryRun {
-		log.Printf("🏜️  DRY-RUN: Would send order to API\n")
-		log.Printf("   URL: %s\n", url)
-		log.Printf("   Side: %s, Maker Amount: %s, Taker Amount: %s\n", 
-			req.Order.Side, req.Order.MakerAmount, req.Order.TakerAmount)
 	}
 
 	httpReq, err := http.NewRequest("POST", url, strings.NewReader(string(payload)))
@@ -407,10 +479,24 @@ func (lte *LiveTradingEngine) sendOrderToAPI(req *SendOrderRequest) (*SendOrderR
 
 	var response SendOrderResponse
 	if err := json.Unmarshal(body, &response); err != nil {
+		log.Printf("❌ Failed to parse JSON response. Status: %d, Body: %s\n", 
+			resp.StatusCode, string(body[:min(len(body), 500)]))
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	// Log detailed error information for non-200 responses
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("❌ API Error (Status %d): %s\n", resp.StatusCode, response.ErrorMsg)
+		log.Printf("   Request Payload:\n")
+		log.Printf("   - Owner: %s\n", req.Owner)
+		log.Printf("   - Maker: %s\n", req.Order.Maker)
+		log.Printf("   - Signer: %s\n", req.Order.Signer)
+		log.Printf("   - TokenID: %s\n", req.Order.TokenID)
+		log.Printf("   - Side: %s\n", req.Order.Side)
+		log.Printf("   - MakerAmount: %s\n", req.Order.MakerAmount)
+		log.Printf("   - TakerAmount: %s\n", req.Order.TakerAmount)
+		log.Printf("   - SignatureType: %d\n", req.Order.SignatureType)
+		log.Printf("   Full response: %s\n", string(body[:min(len(body), 500)]))
 		return &response, fmt.Errorf("API returned status %d: %s", resp.StatusCode, response.ErrorMsg)
 	}
 

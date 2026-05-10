@@ -33,7 +33,7 @@ func main() {
 	client := &polymarket.Client{}
 
 	// Create a new live trading engine
-	engine := trading.NewLiveTradingEngine(client, "", "", privateKey, address)
+	engine := trading.NewLiveTradingEngine(client, "", "", "", privateKey, address)
 
 	// Test GetBalance interface
 	fmt.Println("Testing LiveTradingEngine.GetBalance()...")
