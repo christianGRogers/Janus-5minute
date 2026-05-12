@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -295,11 +294,26 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 	return orderID, nil
 }
 
-// placeOrderViaScript calls the Python SDK script to place an order with proper EIP-712 signing
+// placeOrderViaScript calls Python with py-clob-client to place an order
+// Step 1: Fetch market data to get token ID from market ID
+// Step 2: Place order using the token ID
 func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, price float64, size float64) (string, error) {
+	// Step 1: Get token IDs for the market using Gamma API
+	tokenID, err := lte.getTokenIDFromMarketID(marketID)
+	if err != nil {
+		log.Printf("❌ Failed to get token ID for market %s: %v", marketID, err)
+		return "", err
+	}
+
+	if tokenID == "" {
+		log.Printf("❌ No token ID found for market %s", marketID)
+		return "", fmt.Errorf("no token ID found for market %s", marketID)
+	}
+
+	// Step 2: Place order using token ID
 	cmd := exec.Command("python", "tools/place_order.py",
-		"--token-id", marketID,
-		"--price", fmt.Sprintf("%.2f", price),
+		"--token-id", tokenID,
+		"--price", fmt.Sprintf("%.4f", price),
 		"--size", fmt.Sprintf("%.2f", size),
 		"--side", side,
 		"--tick-size", "0.01",
@@ -316,7 +330,7 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	
 	stdoutStr := stdout.String()
 	stderrStr := stderr.String()
@@ -331,8 +345,8 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 	
 	if err != nil {
 		log.Printf("❌ Order placement script failed")
-		log.Printf("   Command: python tools/place_order.py --token-id %s --price %.2f --size %.2f --side %s", 
-			marketID, price, size, side)
+		log.Printf("   Command: python tools/place_order.py --token-id %s --price %.4f --size %.2f --side %s", 
+			tokenID, price, size, side)
 		log.Printf("   Error: %v", err)
 		if stderrStr != "" {
 			log.Printf("   Stderr: %s", stderrStr)
@@ -364,151 +378,61 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 		return "", fmt.Errorf("order placement failed: %s", errorMsg)
 	}
 
+	log.Printf("✅ Order placed successfully - Token: %s, OrderID: %s", tokenID, result.OrderID)
 	return result.OrderID, nil
 }
 
-// buildOrderPayload constructs the order payload for signing
-func (lte *LiveTradingEngine) buildOrderPayload(marketID string, side string, price float64, size float64) *OrderPayload {
-	// Convert price and size to fixed-point math (6 decimals)
-	makerAmount := uint64(size * 1e6)
-	takerAmount := uint64((price * size) * 1e6)
-
-	// Swap amounts based on side
-	if side == "SELL" {
-		makerAmount, takerAmount = takerAmount, makerAmount
-	}
-
-	now := time.Now()
-	timestamp := now.UnixMilli()
-	expiration := now.Add(24 * time.Hour).Unix()
-
-	return &OrderPayload{
-		Maker:         lte.address,
-		Signer:        lte.address,
-		TokenID:       marketID, // Token ID from market
-		MakerAmount:   fmt.Sprintf("%d", makerAmount),
-		TakerAmount:   fmt.Sprintf("%d", takerAmount),
-		Side:          side,
-		Expiration:    fmt.Sprintf("%d", expiration),
-		Timestamp:     fmt.Sprintf("%d", timestamp),
-		Metadata:      "",
-		Builder:       "0x0000000000000000000000000000000000000000000000000000000000000000",
-		Salt:          rand.Int63(),
-		SignatureType: 0, // EOA signature
-	}
-}
-
-// signOrder signs the order using HMAC
-func (lte *LiveTradingEngine) signOrder(payload *OrderPayload) (string, error) {
-	// TODO: Implement proper EIP-712 signing
-	// For now, use HMAC-SHA256 as placeholder
-	// This should use the private key to sign the EIP-712 typed data
-
-	msgToSign := fmt.Sprintf("%s%s%s%s%s%s%s%d",
-		payload.Maker,
-		payload.Signer,
-		payload.TokenID,
-		payload.MakerAmount,
-		payload.TakerAmount,
-		payload.Side,
-		payload.Timestamp,
-		payload.Salt,
-	)
-
-	h := hmac.New(sha256.New, []byte(lte.privateKey))
-	h.Write([]byte(msgToSign))
-	signature := hex.EncodeToString(h.Sum(nil))
-
-	return "0x" + signature, nil
-}
-
-// sendOrderToAPI sends the order to the Polymarket CLOB API
-func (lte *LiveTradingEngine) sendOrderToAPI(req *SendOrderRequest) (*SendOrderResponse, error) {
-	// If dry-run mode is enabled, simulate the order locally without sending to API
-	if lte.dryRun {
-		dryRunID := fmt.Sprintf("0x%s%d", strings.Repeat("0", 38), rand.Int63())
-		log.Printf("🏜️  DRY-RUN: Simulating order placement locally\n")
-		log.Printf("   Order ID: %s\n", dryRunID)
-		log.Printf("   Side: %s, Maker Amount: %s, Taker Amount: %s\n", 
-			req.Order.Side, req.Order.MakerAmount, req.Order.TakerAmount)
-		
-		return &SendOrderResponse{
-			Success:   true,
-			OrderID:   dryRunID,
-			Status:    "live",
-			ErrorMsg:  "",
-		}, nil
-	}
-
-	// Create HTTP request
-	url := "https://clob.polymarket.com/order"
-	payload, err := json.Marshal(req)
+// getTokenIDFromMarketID fetches the token ID for a given market ID from Gamma API
+func (lte *LiveTradingEngine) getTokenIDFromMarketID(marketID string) (string, error) {
+	// marketID is typically the market slug (e.g., "btc-updown-5m-1234567890")
+	// Fetch market data from Gamma API
+	
+	url := fmt.Sprintf("https://gamma-api.polymarket.com/markets/slug/%s", marketID)
+	
+	httpReq, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", url, strings.NewReader(string(payload)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
-	}
+	httpReq.Header.Set("Accept", "application/json")
 
-	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("POLY_API_KEY", lte.apiKey)
-	httpReq.Header.Set("POLY_ADDRESS", lte.address)
-	httpReq.Header.Set("POLY_PASSPHRASE", lte.passphrase)
-	httpReq.Header.Set("POLY_TIMESTAMP", strconv.FormatInt(time.Now().Unix(), 10))
-
-	// Add signature header
-	signature := lte.createRequestSignature(string(payload))
-	httpReq.Header.Set("POLY_SIGNATURE", signature)
-
-	// Send request
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return "", fmt.Errorf("failed to fetch market data: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Parse response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	var response SendOrderResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		log.Printf("❌ Failed to parse JSON response. Status: %d, Body: %s\n", 
-			resp.StatusCode, string(body[:min(len(body), 500)]))
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+	// Parse the response to extract token IDs
+	var market struct {
+		ClobTokenIds []string `json:"clobTokenIds"`
+		Question     string   `json:"question"`
+		Slug         string   `json:"slug"`
 	}
 
-	// Log detailed error information for non-200 responses
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("❌ API Error (Status %d): %s\n", resp.StatusCode, response.ErrorMsg)
-		log.Printf("   Request Payload:\n")
-		log.Printf("   - Owner: %s\n", req.Owner)
-		log.Printf("   - Maker: %s\n", req.Order.Maker)
-		log.Printf("   - Signer: %s\n", req.Order.Signer)
-		log.Printf("   - TokenID: %s\n", req.Order.TokenID)
-		log.Printf("   - Side: %s\n", req.Order.Side)
-		log.Printf("   - MakerAmount: %s\n", req.Order.MakerAmount)
-		log.Printf("   - TakerAmount: %s\n", req.Order.TakerAmount)
-		log.Printf("   - SignatureType: %d\n", req.Order.SignatureType)
-		log.Printf("   Full response: %s\n", string(body[:min(len(body), 500)]))
-		return &response, fmt.Errorf("API returned status %d: %s", resp.StatusCode, response.ErrorMsg)
+	if err := json.Unmarshal(body, &market); err != nil {
+		log.Printf("❌ Failed to parse market data: %v", err)
+		log.Printf("   Response: %s", string(body[:min(len(body), 500)]))
+		return "", fmt.Errorf("failed to parse market data: %w", err)
 	}
 
-	return &response, nil
+	if len(market.ClobTokenIds) == 0 {
+		return "", fmt.Errorf("no token IDs found for market %s", marketID)
+	}
+
+	// Return first token ID (UP outcome)
+	tokenID := market.ClobTokenIds[0]
+	log.Printf("✅ Found token ID for market %s: %s", marketID, tokenID)
+	
+	return tokenID, nil
 }
 
-// createRequestSignature creates HMAC signature for the CLOB order request
-func (lte *LiveTradingEngine) createRequestSignature(payload string) string {
-	h := hmac.New(sha256.New, []byte(lte.passphrase))
-	h.Write([]byte(payload))
-	return hex.EncodeToString(h.Sum(nil))
-}
+
 
 // createPortfolioAPISignature creates Ed25519 signature for Portfolio API requests
 // Signature of: timestamp + method + path

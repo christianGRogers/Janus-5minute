@@ -43,9 +43,9 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         Dict with order result or error
     """
     try:
-        # Get credentials
-        private_key = "0x2f049a5097611849c3421f9261bc0b5b4be614fefd9a9e0549f6bd52081aebc5" #os.getenv("PRIVATE_KEY")
-        address = "0x1566c14cfA6D4b268C02b869e102D518913Ee676" #os.getenv("POLYMARKET_ADDRESS")
+        # Get credentials from environment
+        private_key = os.getenv("PRIVATE_KEY")
+        address = os.getenv("POLYMARKET_ADDRESS")
         
         if not private_key or not address:
             return {
