@@ -29,7 +29,7 @@ type LateEntryUpDownStrategy struct {
 }
 
 // NewLateEntryUpDownStrategy creates a new late entry strategy that trades both UP and DOWN
-func NewLateEntryUpDownStrategy(engine *trading.PaperTradingEngine) *LateEntryUpDownStrategy {
+func NewLateEntryUpDownStrategy(engine trading.TradingEngine) *LateEntryUpDownStrategy {
 	log.Printf("Initializing LateEntryUpDownStrategy with parameters: minBuyPrice=%.2f, maxSellPrice=%.2f, minWinConfidence=%.2f, extremeConfidence=%.2f",
 		0.75, 0.25, 0.75, 0.98)
 	strategy := &LateEntryUpDownStrategy{
@@ -43,7 +43,8 @@ func NewLateEntryUpDownStrategy(engine *trading.PaperTradingEngine) *LateEntryUp
 		extremeConfidence:   0.98,        // Only trade at extreme certainty
 	}
 	// Override max position size for this strategy
-	strategy.Config.MaxPositionSize = 100.0
+	strategy.Config.RiskTolerance = 1.0
+	strategy.Config.MaxPositionSize = 0 // Disable fixed max, use dynamic sizing
 	return strategy
 }
 
