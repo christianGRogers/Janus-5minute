@@ -43,14 +43,14 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         Dict with order result or error
     """
     try:
-        # Get credentials from environment
+        # Get credentials
         private_key = os.getenv("PRIVATE_KEY")
-        address = os.getenv("POLYMARKET_ADDRESS")
+        address = os.getenv("PROXY_ADDRESS")  # The address that will fund the order (must match API key derivation)
         
         if not private_key or not address:
             return {
                 "success": False,
-                "error": "Missing PRIVATE_KEY or POLYMARKET_ADDRESS environment variables"
+                "error": "Missing PRIVATE_KEY or PROXY_ADDRESS environment variables"
             }
         
         # Strip 0x prefix if present
