@@ -30,15 +30,15 @@ type LateEntryUpOnlyStrategy struct {
 // NewLateEntryUpOnlyStrategy creates a new late entry up-only strategy
 func NewLateEntryUpOnlyStrategy(engine trading.TradingEngine) *LateEntryUpOnlyStrategy {
 	log.Printf("Initializing LateEntryUpOnlyStrategy with parameters: minBuyPrice=%.2f, minWinConfidence=%.2f, extremeConfidence=%.2f (UP ONLY - NO SHORTS)",
-		0.75, 0.75, 0.98)
+		0.70, 0.70, 0.92)
 	strategy := &LateEntryUpOnlyStrategy{
 		BaseStrategy:        NewBaseStrategy(engine),
 		windowStartTime:     time.Now(),
 		lastCheckTime:       time.Now(),
 		positionsThisWindow: make(map[string]bool),
-		minBuyPrice:         0.75,        // Only buy UP when very high confidence (0.75+)
-		minWinConfidence:    0.75,        // 25% distance from 0.50 midpoint
-		extremeConfidence:   0.98,        // Only trade at extreme certainty
+		minBuyPrice:         0.70,        // Only buy UP when very high confidence (0.70+)
+		minWinConfidence:    0.70,        // 20% distance from 0.50 midpoint
+		extremeConfidence:   0.92,        // Trade at high certainty (0.92+)
 	}
 	// Use 100% risk tolerance: can risk up to 100% of current balance per trade
 	// This means if balance is $20, a single trade can be up to $20
