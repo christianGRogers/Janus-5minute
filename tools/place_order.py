@@ -65,11 +65,13 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         chain_id = 137
         
         # Create temporary client to derive API credentials
+        # CRITICAL: Must use signature_type=3 (POLY_1271) with the proxy address (funder)
+        # This ensures the API key is bound to the proxy address for V2 deposit wallets
         temp_client = ClobClient(
             host=host,
             key=private_key,
             chain_id=chain_id,
-            signature_type=0,  # EOA signature
+            signature_type=3,  # POLY_1271 (EIP-1271) - for V2 deposit wallet proxy
             funder=address
         )
         
@@ -88,11 +90,12 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
             }
         
         # Initialize authenticated client with derived credentials
+        # CRITICAL: Must use the SAME signature_type=3 as the temp_client
         client = ClobClient(
             host=host,
             key=private_key,
             chain_id=chain_id,
-            signature_type=0,  # EOA signature
+            signature_type=3,  # POLY_1271 (EIP-1271) - MUST match temp_client
             funder=address,
             creds=api_creds
         )

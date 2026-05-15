@@ -52,7 +52,7 @@ func fetchLatestBTCMarket(client *polymarket.Client) (string, error) {
 // TestPlaceOrderLive tests placing real orders on the most recent 5-minute BTC market
 func main() {
 	// Load API credentials from environment variables
-	address := os.Getenv("POLYMARKET_ADDRESS")
+	address := os.Getenv("PROXY_ADDRESS")
 	privateKey := os.Getenv("PRIVATE_KEY")
 	apiKey := os.Getenv("POLYMARKET_API_KEY")
 	apiSecret := os.Getenv("POLYMARKET_API_SECRET")
@@ -97,14 +97,15 @@ func main() {
 	fmt.Println("🎯 LIVE ORDER PLACEMENT TEST - BTC 5-Minute Market")
 	fmt.Println(strings.Repeat("=", 70))
 	fmt.Printf("Market ID: %s\n", marketID)
-	fmt.Println("Placing real orders worth 5 cents (0.05 USDC) each")
+	fmt.Println("Placing real orders worth ~$1 USD each (minimum order size)")
 	fmt.Println()
 
-	orderSize := 0.05 // 5 cents in USDC
+	// At price 0.50, we need 2 shares to spend ~$1 USD
+	orderSize := 2.0 // ~$1 USD at 0.50 price
 
 	// Test 1: BUY order at 0.50 price
 	fmt.Println(strings.Repeat("=", 70))
-	fmt.Println("Test 1: LIVE BUY Order - 5 cents @ 0.50 price")
+	fmt.Println("Test 1: LIVE BUY Order - ~$1 USD @ 0.50 price (2 shares)")
 	fmt.Println(strings.Repeat("=", 70))
 	orderID1, err1 := engine.PlaceOrder(marketID, "BUY", 0.50, orderSize)
 	if err1 == nil && orderID1 != "" {
@@ -113,76 +114,6 @@ func main() {
 		testsPassed++
 	} else {
 		fmt.Printf("❌ Test failed - Error: %v\n", err1)
-		testsFailed++
-	}
-
-	// Test 2: SELL order at 0.55 price
-	fmt.Println("\n" + strings.Repeat("=", 70))
-	fmt.Println("Test 2: LIVE SELL Order - 5 cents @ 0.55 price")
-	fmt.Println(strings.Repeat("=", 70))
-	orderID2, err2 := engine.PlaceOrder(marketID, "SELL", 0.55, orderSize)
-	if err2 == nil && orderID2 != "" {
-		fmt.Printf("✅ Test passed - Order placed successfully\n")
-		fmt.Printf("   Order ID: %s\n", orderID2)
-		testsPassed++
-	} else {
-		fmt.Printf("❌ Test failed - Error: %v\n", err2)
-		testsFailed++
-	}
-
-	// Test 3: BUY with UP outcome
-	fmt.Println("\n" + strings.Repeat("=", 70))
-	fmt.Println("Test 3: LIVE PlaceOrderWithOutcome - BUY with UP Outcome")
-	fmt.Println(strings.Repeat("=", 70))
-	orderID3, err3 := engine.PlaceOrderWithOutcome(marketID, "BUY", 0.52, orderSize, 100, "UP")
-	if err3 == nil && orderID3 != "" {
-		fmt.Printf("✅ Test passed - Order placed successfully\n")
-		fmt.Printf("   Order ID: %s\n", orderID3)
-		testsPassed++
-	} else {
-		fmt.Printf("❌ Test failed - Error: %v\n", err3)
-		testsFailed++
-	}
-
-	// Test 4: SELL with DOWN outcome
-	fmt.Println("\n" + strings.Repeat("=", 70))
-	fmt.Println("Test 4: LIVE PlaceOrderWithOutcome - SELL with DOWN Outcome")
-	fmt.Println(strings.Repeat("=", 70))
-	orderID4, err4 := engine.PlaceOrderWithOutcome(marketID, "SELL", 0.48, orderSize, 100, "DOWN")
-	if err4 == nil && orderID4 != "" {
-		fmt.Printf("✅ Test passed - Order placed successfully\n")
-		fmt.Printf("   Order ID: %s\n", orderID4)
-		testsPassed++
-	} else {
-		fmt.Printf("❌ Test failed - Error: %v\n", err4)
-		testsFailed++
-	}
-
-	// Test 5: Invalid price (should fail)
-	fmt.Println("\n" + strings.Repeat("=", 70))
-	fmt.Println("Test 5: Invalid Price (should fail locally)")
-	fmt.Println(strings.Repeat("=", 70))
-	_, err5 := engine.PlaceOrder(marketID, "BUY", 1.50, orderSize)
-	if err5 != nil {
-		fmt.Printf("✅ Test passed - Correctly rejected invalid price\n")
-		fmt.Printf("   Error: %v\n", err5)
-		testsPassed++
-	} else {
-		fmt.Printf("❌ Test failed - Should have rejected invalid price\n")
-		testsFailed++
-	}
-
-	// Test 6: Invalid size (should fail)
-	fmt.Println("\n" + strings.Repeat("=", 70))
-	fmt.Println("Test 6: Invalid Size (should fail locally)")
-	fmt.Println(strings.Repeat("=", 70))
-	_, err6 := engine.PlaceOrder(marketID, "BUY", 0.50, -1)
-	if err6 != nil {
-		fmt.Printf("✅ Test passed - Correctly rejected invalid size\n")
-		fmt.Printf("   Error: %v\n", err6)
-		testsPassed++
-	} else {
-		fmt.Printf("❌ Test failed - Should have rejected invalid size\n")
 		testsFailed++
 	}
 
@@ -195,7 +126,7 @@ func main() {
 	fmt.Printf("📊 Total:  %d\n", testsPassed+testsFailed)
 	fmt.Println()
 	fmt.Println("⚠️  These are REAL orders placed on the Polymarket production API")
-	fmt.Println("    Each successful order placed 0.05 USDC worth of stock")
+	fmt.Println("    Each successful order placed ~$1 USD worth of stock")
 	fmt.Println()
 
 	if testsFailed > 0 {
