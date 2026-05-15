@@ -102,6 +102,25 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         
         print(f"DEBUG: Client initialized, creating order: token_id={token_id}, price={price}, size={size}, side={side}", file=sys.stderr)
         
+        # Verify balance before placing order (same as order_test.py)
+        print(f"DEBUG: Checking balance before order placement", file=sys.stderr)
+        try:
+            from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+            balance_data = client.get_balance_allowance(
+                params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            balance = float(balance_data.get("balance", "0"))
+            print(f"DEBUG: Current balance: ${balance}", file=sys.stderr)
+            if balance == 0:
+                print(f"ERROR: Balance is 0. Cannot place order.", file=sys.stderr)
+                return {
+                    "success": False,
+                    "error": "Balance is 0. Cannot place order.",
+                    "errorMsg": "Balance is 0. Cannot place order."
+                }
+        except Exception as e:
+            print(f"DEBUG: Could not check balance: {e}", file=sys.stderr)
+        
         # Fetch market details to get correct tick_size and neg_risk
         print(f"DEBUG: Fetching market details", file=sys.stderr)
         try:
