@@ -2,15 +2,12 @@ package trading
 
 import (
 	"crypto/ed25519"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -162,8 +159,8 @@ func (lte *LiveTradingEngine) fetchBalanceFromAPI() float64 {
 	
 	// Set environment variables for the Python script
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("POLYMARKET_ADDRESS=%s", lte.address),
 		fmt.Sprintf("PRIVATE_KEY=%s", lte.privateKey),
+		fmt.Sprintf("PROXY_ADDRESS=%s", lte.address),  // The proxy address (not EOA)
 	)
 	
 	output, err := cmd.Output()
@@ -295,19 +292,34 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 }
 
 // placeOrderViaScript calls Python with py-clob-client to place an order
-// Step 1: Fetch market data to get token ID from market ID
+// Step 1: Check if marketID is already a token ID, or if it's a market slug that needs lookup
 // Step 2: Place order using the token ID
 func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, price float64, size float64) (string, error) {
-	// Step 1: Get token IDs for the market using Gamma API
-	tokenID, err := lte.getTokenIDFromMarketID(marketID)
-	if err != nil {
-		log.Printf("❌ Failed to get token ID for market %s: %v", marketID, err)
-		return "", err
-	}
-
-	if tokenID == "" {
-		log.Printf("❌ No token ID found for market %s", marketID)
-		return "", fmt.Errorf("no token ID found for market %s", marketID)
+	var tokenID string
+	var err error
+	
+	// Determine if marketID is already a token ID or a market slug
+	// Token IDs are large numeric strings (typically 70+ digit numbers)
+	// Market slugs contain hyphens and are much shorter (e.g., "btc-updown-5m-1234567890")
+	if len(marketID) > 50 {
+		// Likely a token ID already (token IDs are very large numbers)
+		tokenID = marketID
+		log.Printf("✅ Using provided token ID: %s", tokenID)
+	} else if strings.Contains(marketID, "-") {
+		// Market slug - need to fetch token ID from Gamma API
+		tokenID, err = lte.getTokenIDFromMarketID(marketID)
+		if err != nil {
+			log.Printf("❌ Failed to get token ID for market slug %s: %v", marketID, err)
+			return "", err
+		}
+		
+		if tokenID == "" {
+			log.Printf("❌ No token ID found for market slug %s", marketID)
+			return "", fmt.Errorf("no token ID found for market slug %s", marketID)
+		}
+	} else {
+		// Unknown format
+		return "", fmt.Errorf("marketID must be either a market slug (e.g., 'btc-updown-5m-xxx') or a token ID (large numeric string), got: %s", marketID)
 	}
 
 	// Step 2: Place order using token ID
@@ -321,8 +333,8 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 
 	// Set environment variables for Python script
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("POLYMARKET_ADDRESS=%s", lte.address),
 		fmt.Sprintf("PRIVATE_KEY=%s", lte.privateKey),
+		fmt.Sprintf("PROXY_ADDRESS=%s", lte.address),  // The proxy address (not EOA)
 	)
 
 	// Capture both stdout and stderr

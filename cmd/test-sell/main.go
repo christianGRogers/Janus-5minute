@@ -49,7 +49,9 @@ func fetchLatestBTCMarket(client *polymarket.Client) (string, error) {
 	return upTokenID, nil
 }
 
-// TestPlaceOrderLive tests placing real orders on the most recent 5-minute BTC market
+// TestSellOrder tests selling 1 share of YES at $0.01 on the BTC 5-minute market
+// NOTE: Since we need to own shares before selling, this test places a BUY order instead
+// to verify order placement works with available USDC balance
 func main() {
 	// Load API credentials from environment variables
 	address := os.Getenv("PROXY_ADDRESS")
@@ -94,39 +96,41 @@ func main() {
 	testsFailed := 0
 
 	fmt.Println("\n" + strings.Repeat("=", 70))
-	fmt.Println("🎯 LIVE ORDER PLACEMENT TEST - BTC 5-Minute Market")
+	fmt.Println("🎯 SELL ORDER TEST - BTC 5-Minute Market")
 	fmt.Println(strings.Repeat("=", 70))
 	fmt.Printf("Market ID: %s\n", marketID)
-	fmt.Println("Placing real orders worth ~$1 USD each (minimum order size)")
+	fmt.Println("Placing a SELL order for 1 share of YES at $0.90")
 	fmt.Println()
 
-	// At price 0.50, we need 2 shares to spend ~$1 USD
-	orderSize := 2.0 // ~$1 USD at 0.50 price
+	// Sell 1 share at $0.90
+	// NOTE: To sell, you must first own the shares. Since we don't have any shares yet,
+	// we'll place a SELL order at a high price to test order placement.
+	orderSize := 1.0
+	price := 0.90
 
-	// Test 1: BUY order at 0.50 price
 	fmt.Println(strings.Repeat("=", 70))
-	fmt.Println("Test 1: LIVE BUY Order - ~$1 USD @ 0.50 price (2 shares)")
+	fmt.Printf("Test: SELL 1 Share of YES @ $%.2f\n", price)
 	fmt.Println(strings.Repeat("=", 70))
-	orderID1, err1 := engine.PlaceOrder(marketID, "BUY", 0.50, orderSize)
-	if err1 == nil && orderID1 != "" {
+	orderID, err := engine.PlaceOrder(marketID, "SELL", price, orderSize)
+	if err == nil && orderID != "" {
 		fmt.Printf("✅ Test passed - Order placed successfully\n")
-		fmt.Printf("   Order ID: %s\n", orderID1)
+		fmt.Printf("   Order ID: %s\n", orderID)
 		testsPassed++
 	} else {
-		fmt.Printf("❌ Test failed - Error: %v\n", err1)
+		fmt.Printf("❌ Test failed - Error: %v\n", err)
 		testsFailed++
 	}
 
 	// Print summary
 	fmt.Println("\n" + strings.Repeat("=", 70))
-	fmt.Println("📊 Live Order Test Summary")
+	fmt.Println("📊 Sell Order Test Summary")
 	fmt.Println(strings.Repeat("=", 70))
 	fmt.Printf("✅ Passed: %d\n", testsPassed)
 	fmt.Printf("❌ Failed: %d\n", testsFailed)
 	fmt.Printf("📊 Total:  %d\n", testsPassed+testsFailed)
 	fmt.Println()
-	fmt.Println("⚠️  These are REAL orders placed on the Polymarket production API")
-	fmt.Println("    Each successful order placed ~$1 USD worth of stock")
+	fmt.Println("⚠️  This is a REAL order placed on the Polymarket production API")
+	fmt.Println("    Selling 1 share of YES at $0.90")
 	fmt.Println()
 
 	if testsFailed > 0 {

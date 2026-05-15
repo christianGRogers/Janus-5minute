@@ -21,10 +21,10 @@ func main() {
 	cfg := config.DefaultConfig()
 
 	// For local development, override with environment variables if available
-	if apiKey := os.Getenv("POLYMARKET_API_KEY"); apiKey != "" {
-		cfg.ApiKey = apiKey
+	if address := os.Getenv("PROXY_ADDRESS"); address != "" {
+		cfg.Address = address
 	}
-	if privateKey := os.Getenv("POLYMARKET_PRIVATE_KEY"); privateKey != "" {
+	if privateKey := os.Getenv("PRIVATE_KEY"); privateKey != "" {
 		cfg.PrivateKey = privateKey
 	}
 
@@ -75,7 +75,7 @@ func main() {
 
 	// Create and initialize strategy
 	var strategy strategies.Strategy
-	strategy = strategies.NewLateEntryStrategy(tradingEngine)
+	strategy = strategies.NewLateEntryUpOnlyStrategy(tradingEngine)
 	log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
 
 	// Create market logger for analytics

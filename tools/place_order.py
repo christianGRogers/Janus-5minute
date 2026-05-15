@@ -43,14 +43,14 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         Dict with order result or error
     """
     try:
-        # Get credentials from environment
+        # Get credentials
         private_key = os.getenv("PRIVATE_KEY")
-        address = os.getenv("POLYMARKET_ADDRESS")
+        address = os.getenv("PROXY_ADDRESS")  # The address that will fund the order (must match API key derivation)
         
         if not private_key or not address:
             return {
                 "success": False,
-                "error": "Missing PRIVATE_KEY or POLYMARKET_ADDRESS environment variables"
+                "error": "Missing PRIVATE_KEY or PROXY_ADDRESS environment variables"
             }
         
         # Strip 0x prefix if present
@@ -65,11 +65,13 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         chain_id = 137
         
         # Create temporary client to derive API credentials
+        # CRITICAL: Must use signature_type=3 (POLY_1271) with the proxy address (funder)
+        # This ensures the API key is bound to the proxy address for V2 deposit wallets
         temp_client = ClobClient(
             host=host,
             key=private_key,
             chain_id=chain_id,
-            signature_type=0,  # EOA signature
+            signature_type=3,  # POLY_1271 (EIP-1271) - for V2 deposit wallet proxy
             funder=address
         )
         
@@ -88,16 +90,36 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
             }
         
         # Initialize authenticated client with derived credentials
+        # CRITICAL: Must use the SAME signature_type=3 as the temp_client
         client = ClobClient(
             host=host,
             key=private_key,
             chain_id=chain_id,
-            signature_type=0,  # EOA signature
+            signature_type=3,  # POLY_1271 (EIP-1271) - MUST match temp_client
             funder=address,
             creds=api_creds
         )
         
         print(f"DEBUG: Client initialized, creating order: token_id={token_id}, price={price}, size={size}, side={side}", file=sys.stderr)
+        
+        # Verify balance before placing order (same as order_test.py)
+        print(f"DEBUG: Checking balance before order placement", file=sys.stderr)
+        try:
+            from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+            balance_data = client.get_balance_allowance(
+                params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            balance = float(balance_data.get("balance", "0"))
+            print(f"DEBUG: Current balance: ${balance}", file=sys.stderr)
+            if balance == 0:
+                print(f"ERROR: Balance is 0. Cannot place order.", file=sys.stderr)
+                return {
+                    "success": False,
+                    "error": "Balance is 0. Cannot place order.",
+                    "errorMsg": "Balance is 0. Cannot place order."
+                }
+        except Exception as e:
+            print(f"DEBUG: Could not check balance: {e}", file=sys.stderr)
         
         # Fetch market details to get correct tick_size and neg_risk
         print(f"DEBUG: Fetching market details", file=sys.stderr)
