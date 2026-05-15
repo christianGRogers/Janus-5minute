@@ -39,7 +39,7 @@ def main():
         host=host,
         key=private_key,
         chain_id=chain,
-        signature_type=2,           # ← POLY_1271 (EIP-1271) - MUST match trading client
+        signature_type=3,           # ← POLY_1271 (EIP-1271) - MUST match trading client
         funder=proxy_address,       # MUST match trading client
     )
     
