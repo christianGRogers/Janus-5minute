@@ -563,7 +563,7 @@ Examples:
     )
 
     parser.add_argument(
-        "csv_file",
+        "--csv_file",
         help="Path to market_performance.csv file",
     )
 

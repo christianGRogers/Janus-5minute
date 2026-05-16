@@ -77,7 +77,7 @@ func DefaultConfig() *PolymarketConfig {
 		Passphrase:          "YOUR_PASSPHRASE_HERE",
 		PrivateKey:          "YOUR_PRIVATE_KEY_HERE",
 		Address:             "YOUR_ETH_ADDRESS_HERE",
-		PaperTradingEnabled: false,
+		PaperTradingEnabled: true,
 		OrderGasLimit:       500000,
 		OrderChainID:        chainID,
 		PollIntervalSeconds: 1,

@@ -55,7 +55,7 @@ func main() {
 			EnablePriceStaleness:  cfg.PaperTradingRealistic.EnablePriceStaleness,
 			MaxPriceStalenessBps:  cfg.PaperTradingRealistic.MaxPriceStalenessBps,
 		}
-		tradingEngine = trading.NewPaperTradingEngineWithConfig(20, realisticCfg) // Start with 20 USDC
+		tradingEngine = trading.NewPaperTradingEngineWithConfig(15.80, realisticCfg) // Start with 20 USDC
 	} else {
 		log.Println("Live trading mode enabled")
 		log.Println("🚀 Connecting to Polymarket live API...")
