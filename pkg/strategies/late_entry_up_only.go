@@ -12,10 +12,11 @@ import (
 // LateEntryUpOnlyStrategy prioritizes small safe wins towards the end of a 5-minute market window
 // The strategy:
 // 1. Waits until less than 1 minute remains
-// 2. Looks for high price confidence (0.80-0.90) for safe small wins
-// 3. In the last few seconds, aggressively buys any available shares if confidence reaches 0.98-0.99
+// 2. Looks for high price confidence (0.60+) for safe small wins
+// 3. In the last few seconds, aggressively buys any available shares if confidence reaches 0.85+
 // 4. Increases price check frequency for responsiveness
-// 5. ONLY places BUY orders - never shorts (no SELL orders)
+// 5. BUYS BOTH UP and DOWN outcomes - buying low-priced outcomes for high confidence in that outcome
+// 6. NO SHORTS - only buying shares, never selling/shorting
 type LateEntryUpOnlyStrategy struct {
 	*BaseStrategy
 	windowStartTime time.Time
@@ -30,15 +31,15 @@ type LateEntryUpOnlyStrategy struct {
 // NewLateEntryUpOnlyStrategy creates a new late entry up-only strategy
 func NewLateEntryUpOnlyStrategy(engine trading.TradingEngine) *LateEntryUpOnlyStrategy {
 	log.Printf("Initializing LateEntryUpOnlyStrategy with parameters: minBuyPrice=%.2f, minWinConfidence=%.2f, extremeConfidence=%.2f (UP ONLY - NO SHORTS)",
-		0.75, 0.75, 0.98)
+		0.70, 0.70, 0.90)
 	strategy := &LateEntryUpOnlyStrategy{
 		BaseStrategy:        NewBaseStrategy(engine),
 		windowStartTime:     time.Now(),
 		lastCheckTime:       time.Now(),
 		positionsThisWindow: make(map[string]bool),
-		minBuyPrice:         0.75,        // Only buy UP when very high confidence (0.75+)
-		minWinConfidence:    0.75,        // 25% distance from 0.50 midpoint
-		extremeConfidence:   0.98,        // Only trade at extreme certainty
+		minBuyPrice:         0.70,        // Only buy UP when very high confidence (0.70+)
+		minWinConfidence:    0.70,        // Higher confidence threshold
+		extremeConfidence:   0.90,        // Trade at high certainty (0.90+)
 	}
 	// Use 100% risk tolerance: can risk up to 100% of current balance per trade
 	// This means if balance is $20, a single trade can be up to $20
@@ -50,17 +51,17 @@ func NewLateEntryUpOnlyStrategy(engine trading.TradingEngine) *LateEntryUpOnlySt
 
 // Name returns the strategy name
 func (les *LateEntryUpOnlyStrategy) Name() string {
-	return "LateEntryUpOnly"
+	return "LateEntryUpDown"
 }
 
 // EvaluateV2 analyzes market data and returns complete trading signal
 // Strategy logic:
 // 1. Wait until less than 1 minute (60 seconds) remains in the window
 // 2. Check prices frequently for responsiveness
-// 3. ONLY trade when confidence is VERY HIGH (0.75+, 25% distance from 0.50)
-// 4. BUY only when UP price is 0.75+
-// 5. NEVER sell or short - only buy UP shares
-// 6. In final seconds: Buy aggressively at extreme confidence (0.98+)
+// 3. BUY UP when UP price is HIGH (≥0.60, high confidence in UP)
+// 4. BUY DOWN when DOWN price is LOW (≤0.40, high confidence in DOWN, which means LOW DOWN price)
+// 5. NEVER sell or short - only buy shares
+// 6. In final seconds: Buy aggressively at extreme confidence (0.85+ for UP, 0.15- for DOWN)
 func (les *LateEntryUpOnlyStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *TradeSignal {
 	
 	// Calculate the ACTUAL 5-minute market window based on current time
@@ -100,33 +101,35 @@ func (les *LateEntryUpOnlyStrategy) EvaluateV2(markets map[string]*polymarket.Ma
 			continue
 		}
 
-		// Only trade UP outcomes (cache key ends with -UP)
-		if len(cacheKey) < 3 || cacheKey[len(cacheKey)-2:] != "UP" {
-			continue
-		}
-
-		// Extract market ID (remove -UP suffix)
-		marketID := cacheKey[:len(cacheKey)-3]
-
-		// Log market state
-		log.Printf("[LateEntryUpOnly] %s: Market state - Bid: %.4f (size: %.1f), Ask: %.4f (size: %.1f), Liquidity: %.0f", 
-			marketID, book.BestBidParsed, book.BestBidSizeParsed, book.BestAskParsed, book.BestAskSizeParsed, book.LiquidityParsed)
-
-		// Check for valid prices - we need at least one side with a valid price
-		if book.BestBidParsed == 0 && book.BestAskParsed == 0 {
-			log.Printf("[LateEntryUpOnly] %s: Skipped - both bid and ask are 0", marketID)
-			continue
-		}
-
-		// Check liquidity requirement
-		if book.LiquidityParsed < les.Config.MinLiquidityUSDC {
-			log.Printf("[LateEntryUpOnly] %s: Skipped - Liquidity %.0f < %.0f (required)", marketID, book.LiquidityParsed, les.Config.MinLiquidityUSDC)
+		// Extract market ID and outcome type (UP or DOWN)
+		var marketID string
+		var outcome string
+		
+		if len(cacheKey) >= 3 && cacheKey[len(cacheKey)-2:] == "UP" {
+			marketID = cacheKey[:len(cacheKey)-3]
+			outcome = "UP"
+		} else if len(cacheKey) >= 5 && cacheKey[len(cacheKey)-4:] == "DOWN" {
+			marketID = cacheKey[:len(cacheKey)-5]
+			outcome = "DOWN"
+		} else {
 			continue
 		}
 
 		// Skip if we already traded this market this window
 		if les.positionsThisWindow[marketID] {
-			log.Printf("[LateEntryUpOnly] %s: Skipped - Already traded this window", marketID)
+			log.Printf("[LateEntryUpDown] %s (%s): Skipped - Already traded this window", marketID, outcome)
+			continue
+		}
+
+		// Check for valid prices - we need at least one side with a valid price
+		if book.BestBidParsed == 0 && book.BestAskParsed == 0 {
+			log.Printf("[LateEntryUpDown] %s (%s): Skipped - both bid and ask are 0", marketID, outcome)
+			continue
+		}
+
+		// Check liquidity requirement
+		if book.LiquidityParsed < les.Config.MinLiquidityUSDC {
+			log.Printf("[LateEntryUpDown] %s (%s): Skipped - Liquidity %.0f < %.0f (required)", marketID, outcome, book.LiquidityParsed, les.Config.MinLiquidityUSDC)
 			continue
 		}
 
@@ -149,23 +152,31 @@ func (les *LateEntryUpOnlyStrategy) EvaluateV2(markets map[string]*polymarket.Ma
 		// Only enforce strict spread limits when both sides have prices
 		if book.BestBidParsed > 0 && book.BestAskParsed > 0 {
 			if spreadPercent < les.Config.MinSpread || spreadPercent > les.Config.MaxSpread {
-				log.Printf("[LateEntryUpOnly] %s: Skipped - Spread %.2f%% outside range [%.2f%%, %.2f%%]", marketID, spreadPercent, les.Config.MinSpread, les.Config.MaxSpread)
+				log.Printf("[LateEntryUpDown] %s (%s): Skipped - Spread %.2f%% outside range [%.2f%%, %.2f%%]", marketID, outcome, spreadPercent, les.Config.MinSpread, les.Config.MaxSpread)
 				continue
 			}
 		} else {
-			log.Printf("[LateEntryUpOnly] %s: One-sided market (bid=%.4f, ask=%.4f) - allowing wide spread", marketID, book.BestBidParsed, book.BestAskParsed)
+			log.Printf("[LateEntryUpDown] %s (%s): One-sided market (bid=%.4f, ask=%.4f) - allowing wide spread", marketID, outcome, book.BestBidParsed, book.BestAskParsed)
 		}
 
-		log.Printf("[LateEntryUpOnly] %s: Evaluating - Price: %.4f, Spread: %.2f%%, Liquidity: %.0f", marketID, midPrice, spreadPercent, book.LiquidityParsed)
+		log.Printf("[LateEntryUpDown] %s (%s): Evaluating - Price: %.4f, Spread: %.2f%%, Liquidity: %.0f", marketID, outcome, midPrice, spreadPercent, book.LiquidityParsed)
 
-		inFinalSeconds := secondsRemaining < 10
+		inFinalSeconds := secondsRemaining < 20
 		
 		// Get dynamic position size based on current balance and risk tolerance
 		maxPosSize := les.GetDynamicPositionSize()
 
-		// Check all conditions for this data point
-		extremeHighMet := midPrice >= les.extremeConfidence
-		highConfBuyMet := midPrice >= les.minBuyPrice
+		// Strategy: Buy whichever outcome is MORE LIKELY based on current price
+		// For both UP and DOWN: HIGH price = HIGH confidence in that outcome
+		// UP at 0.75 = 75% confidence in UP
+		// DOWN at 0.75 = 75% confidence in DOWN
+		var highConfidenceMet bool
+		var extremeConfidenceMet bool
+		
+		// Same logic for both UP and DOWN: buy when price is high (high confidence)
+		highConfidenceMet = midPrice >= les.minBuyPrice
+		extremeConfidenceMet = midPrice >= les.extremeConfidence
+		
 		minSizeForBuy := math.Min(
 			maxPosSize / book.BestAskParsed,
 			book.BestAskSizeParsed*0.75,
@@ -176,24 +187,24 @@ func (les *LateEntryUpOnlyStrategy) EvaluateV2(markets map[string]*polymarket.Ma
 		) > 0.5
 
 		// Log all conditions
-		log.Printf("[LateEntryUpOnly] %s: CONDITIONS @ %ds remaining (maxPosSize: $%.2f):", marketID, secondsRemaining, maxPosSize)
-		log.Printf("  [%v] In final seconds (<%d)           | inFinalSeconds=%v", boolToCheck(inFinalSeconds), 10, inFinalSeconds)
-		log.Printf("  [%v] Extreme high confidence (≥%.4f)   | price=%.4f", boolToCheck(extremeHighMet), les.extremeConfidence, midPrice)
-		log.Printf("  [%v] High confidence BUY (≥%.4f)      | price=%.4f", boolToCheck(highConfBuyMet), les.minBuyPrice, midPrice)
+		log.Printf("[LateEntryUpDown] %s (%s): CONDITIONS @ %ds remaining (maxPosSize: $%.2f):", marketID, outcome, secondsRemaining, maxPosSize)
+		log.Printf("  [%v] In final seconds (<%d)           | inFinalSeconds=%v", boolToCheck(inFinalSeconds), 20, inFinalSeconds)
+		log.Printf("  [%v] Extreme high confidence (≥%.4f)   | price=%.4f", boolToCheck(extremeConfidenceMet), les.extremeConfidence, midPrice)
+		log.Printf("  [%v] High confidence BUY (≥%.4f)      | price=%.4f", boolToCheck(highConfidenceMet), les.minBuyPrice, midPrice)
 		log.Printf("  [%v] Size OK for extreme BUY (%.1f)    | extremeSize=%.0f", boolToCheck(minSizeForBuy), 0.5, math.Min(maxPosSize/book.BestAskParsed, book.BestAskSizeParsed*0.75))
 		log.Printf("  [%v] Size OK for conservative BUY (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeBuy), 0.5, math.Min((maxPosSize*0.3)/book.BestAskParsed, book.BestAskSizeParsed*0.2))
 
-		// STRATEGY 1: Final seconds - aggressive trading at extreme confidence (0.98+)
+		// STRATEGY 1: Final 30 seconds - aggressive trading at extreme confidence
 		if inFinalSeconds {
-			log.Printf("[LateEntryUpOnly] %s: FINAL SECONDS - checking for extreme confidence...", marketID)
-			// Only trade at extreme certainty: 0.98+
-			if extremeHighMet && minSizeForBuy {
-				// UP is near certain - BUY it
+			log.Printf("[LateEntryUpDown] %s (%s): FINAL 30 SECONDS - checking for extreme confidence...", marketID, outcome)
+			if extremeConfidenceMet && minSizeForBuy {
 				positionSize := math.Min(
 					maxPosSize / book.BestAskParsed,
 					book.BestAskSizeParsed*0.75,
 				)
-				log.Printf("[LateEntryUpOnly] %s: ✓ SIGNAL - BUY (extreme high: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.extremeConfidence, positionSize)
+				// Round down to whole shares - fractional shares not allowed
+				positionSize = math.Floor(positionSize)
+				log.Printf("[LateEntryUpDown] %s (%s): ✓ SIGNAL - BUY (extreme confidence), size: %.0f", marketID, outcome, positionSize)
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
@@ -204,24 +215,23 @@ func (les *LateEntryUpOnlyStrategy) EvaluateV2(markets map[string]*polymarket.Ma
 						Price:              book.BestAskParsed,
 						Size:               positionSize,
 						AvailableLiquidity: book.BestAskSizeParsed,
-						Outcome:            "UP",
+						Outcome:            outcome,
 					}
 				}
 			}
 		}
 
-		// STRATEGY 2: Final minute - only high confidence (0.75+), small positions, conservative sizing
-		// Based on performance data: 0.82-0.86 BUY entries work great
-		// ONLY BUY - NO SHORTS
-
-		// BUY: Only when UP price is very high (0.75+)
-		if highConfBuyMet && minSizeForConservativeBuy {
+		// STRATEGY 2: Final minute - only high confidence, small positions, conservative sizing
+		// BUY both UP and DOWN outcomes when confidence is high
+		if highConfidenceMet && minSizeForConservativeBuy {
 			// Conservative position size for high-confidence buys
 			positionSize := math.Min(
 				(maxPosSize * 0.3) / book.BestAskParsed, // Only 30% of max
 				book.BestAskSizeParsed*0.2, // Take only 20% of liquidity
 			)
-			log.Printf("[LateEntryUpOnly] %s: ✓ SIGNAL - BUY (high conf: %.4f >= %.4f), size: %.0f", marketID, midPrice, les.minBuyPrice, positionSize)
+			// Round down to whole shares - fractional shares not allowed
+			positionSize = math.Floor(positionSize)
+			log.Printf("[LateEntryUpDown] %s (%s): ✓ SIGNAL - BUY (high confidence), size: %.0f", marketID, outcome, positionSize)
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
 				les.positionsThisWindow[marketID] = true
@@ -232,7 +242,7 @@ func (les *LateEntryUpOnlyStrategy) EvaluateV2(markets map[string]*polymarket.Ma
 					Price:              book.BestAskParsed,
 					Size:               positionSize,
 					AvailableLiquidity: book.BestAskSizeParsed,
-					Outcome:            "UP",
+					Outcome:            outcome,
 				}
 			}
 		}

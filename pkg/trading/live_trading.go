@@ -215,7 +215,7 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 	}
 
 	// Call Python script to place order (handles proper EIP-712 signing)
-	orderID, err := lte.placeOrderViaScript(marketID, side, price, size)
+	orderID, err := lte.placeOrderViaScript(marketID, side, price, size, outcome)
 	if err != nil {
 		return "", err
 	}
@@ -293,8 +293,8 @@ func (lte *LiveTradingEngine) PlaceOrderWithOutcome(marketID string, side string
 
 // placeOrderViaScript calls Python with py-clob-client to place an order
 // Step 1: Check if marketID is already a token ID, or if it's a market slug that needs lookup
-// Step 2: Place order using the token ID
-func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, price float64, size float64) (string, error) {
+// Step 2: Place order using the token ID for the specified outcome (UP or DOWN)
+func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, price float64, size float64, outcome string) (string, error) {
 	var tokenID string
 	var err error
 	
@@ -306,16 +306,29 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 		tokenID = marketID
 		log.Printf("✅ Using provided token ID: %s", tokenID)
 	} else if strings.Contains(marketID, "-") {
-		// Market slug - need to fetch token ID from Gamma API
-		tokenID, err = lte.getTokenIDFromMarketID(marketID)
+		// Market slug - need to fetch token IDs from Gamma API
+		upTokenID, downTokenID, err := lte.getTokenIDsFromMarketID(marketID)
 		if err != nil {
-			log.Printf("❌ Failed to get token ID for market slug %s: %v", marketID, err)
+			log.Printf("❌ Failed to get token IDs for market slug %s: %v", marketID, err)
 			return "", err
 		}
 		
-		if tokenID == "" {
-			log.Printf("❌ No token ID found for market slug %s", marketID)
-			return "", fmt.Errorf("no token ID found for market slug %s", marketID)
+		// Select the correct token ID based on outcome
+		if outcome == "DOWN" {
+			tokenID = downTokenID
+			if tokenID == "" {
+				log.Printf("❌ No DOWN token ID found for market slug %s", marketID)
+				return "", fmt.Errorf("no DOWN token ID found for market slug %s", marketID)
+			}
+			log.Printf("✅ Using DOWN token ID for market %s: %s", marketID, tokenID)
+		} else {
+			// Default to UP for empty outcome or explicit UP
+			tokenID = upTokenID
+			if tokenID == "" {
+				log.Printf("❌ No UP token ID found for market slug %s", marketID)
+				return "", fmt.Errorf("no UP token ID found for market slug %s", marketID)
+			}
+			log.Printf("✅ Using UP token ID for market %s: %s", marketID, tokenID)
 		}
 	} else {
 		// Unknown format
@@ -387,6 +400,13 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 			errorMsg = result.ErrorMsg
 		}
 		log.Printf("❌ Order placement failed: %s", errorMsg)
+		
+		// Check if this is a "size lower than minimum" error
+		if strings.Contains(errorMsg, "lower than the minimum") && size < 5.0 {
+			log.Printf("⚠️  Size %.2f is below minimum - retrying with size = 5.0", size)
+			return lte.placeOrderViaScript(marketID, side, price, 5.0, outcome)
+		}
+		
 		return "", fmt.Errorf("order placement failed: %s", errorMsg)
 	}
 
@@ -394,7 +414,81 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 	return result.OrderID, nil
 }
 
-// getTokenIDFromMarketID fetches the token ID for a given market ID from Gamma API
+// getTokenIDsFromMarketID fetches both UP and DOWN token IDs for a given market ID from Gamma API
+func (lte *LiveTradingEngine) getTokenIDsFromMarketID(marketID string) (string, string, error) {
+	// marketID is typically the market slug (e.g., "btc-updown-5m-1234567890")
+	// Fetch market data from Gamma API
+	
+	url := fmt.Sprintf("https://gamma-api.polymarket.com/markets/slug/%s", marketID)
+	
+	httpReq, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to fetch market data: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Parse the response to extract token IDs
+	var market struct {
+		ClobTokenIds interface{} `json:"clobTokenIds"` // Can be either []string or string (JSON)
+		Question     string      `json:"question"`
+		Slug         string      `json:"slug"`
+	}
+
+	if err := json.Unmarshal(body, &market); err != nil {
+		log.Printf("❌ Failed to parse market data: %v", err)
+		log.Printf("   Response: %s", string(body[:min(len(body), 500)]))
+		return "", "", fmt.Errorf("failed to parse market data: %w", err)
+	}
+
+	// Handle clobTokenIds which can be either:
+	// 1. A direct array: []string
+	// 2. A JSON string that needs to be parsed: "[\"id1\", \"id2\"]"
+	var tokenIds []string
+	
+	switch v := market.ClobTokenIds.(type) {
+	case []interface{}:
+		// Direct array
+		for _, id := range v {
+			if str, ok := id.(string); ok {
+				tokenIds = append(tokenIds, str)
+			}
+		}
+	case string:
+		// JSON string - parse it
+		if err := json.Unmarshal([]byte(v), &tokenIds); err != nil {
+			log.Printf("❌ Failed to parse clobTokenIds JSON string: %v", err)
+			return "", "", fmt.Errorf("failed to parse clobTokenIds: %w", err)
+		}
+	default:
+		return "", "", fmt.Errorf("unexpected clobTokenIds type: %T", v)
+	}
+
+	if len(tokenIds) < 2 {
+		return "", "", fmt.Errorf("expected 2 token IDs (UP and DOWN) for market %s, got %d", marketID, len(tokenIds))
+	}
+
+	upTokenID := tokenIds[0]
+	downTokenID := tokenIds[1]
+	
+	log.Printf("✅ Found token IDs for market %s: UP=%s, DOWN=%s", marketID, upTokenID, downTokenID)
+	
+	return upTokenID, downTokenID, nil
+}
+
+// getTokenIDFromMarketID fetches the token ID for a given market ID from Gamma API (deprecated, use getTokenIDsFromMarketID)
 func (lte *LiveTradingEngine) getTokenIDFromMarketID(marketID string) (string, error) {
 	// marketID is typically the market slug (e.g., "btc-updown-5m-1234567890")
 	// Fetch market data from Gamma API
@@ -422,9 +516,9 @@ func (lte *LiveTradingEngine) getTokenIDFromMarketID(marketID string) (string, e
 
 	// Parse the response to extract token IDs
 	var market struct {
-		ClobTokenIds []string `json:"clobTokenIds"`
-		Question     string   `json:"question"`
-		Slug         string   `json:"slug"`
+		ClobTokenIds interface{} `json:"clobTokenIds"` // Can be either []string or string (JSON)
+		Question     string      `json:"question"`
+		Slug         string      `json:"slug"`
 	}
 
 	if err := json.Unmarshal(body, &market); err != nil {
@@ -433,12 +527,35 @@ func (lte *LiveTradingEngine) getTokenIDFromMarketID(marketID string) (string, e
 		return "", fmt.Errorf("failed to parse market data: %w", err)
 	}
 
-	if len(market.ClobTokenIds) == 0 {
+	// Handle clobTokenIds which can be either:
+	// 1. A direct array: []string
+	// 2. A JSON string that needs to be parsed: "[\"id1\", \"id2\"]"
+	var tokenIds []string
+	
+	switch v := market.ClobTokenIds.(type) {
+	case []interface{}:
+		// Direct array
+		for _, id := range v {
+			if str, ok := id.(string); ok {
+				tokenIds = append(tokenIds, str)
+			}
+		}
+	case string:
+		// JSON string - parse it
+		if err := json.Unmarshal([]byte(v), &tokenIds); err != nil {
+			log.Printf("❌ Failed to parse clobTokenIds JSON string: %v", err)
+			return "", fmt.Errorf("failed to parse clobTokenIds: %w", err)
+		}
+	default:
+		return "", fmt.Errorf("unexpected clobTokenIds type: %T", v)
+	}
+
+	if len(tokenIds) == 0 {
 		return "", fmt.Errorf("no token IDs found for market %s", marketID)
 	}
 
 	// Return first token ID (UP outcome)
-	tokenID := market.ClobTokenIds[0]
+	tokenID := tokenIds[0]
 	log.Printf("✅ Found token ID for market %s: %s", marketID, tokenID)
 	
 	return tokenID, nil

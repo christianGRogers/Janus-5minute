@@ -101,7 +101,7 @@ func main() {
 	fmt.Println()
 
 	// At price 0.50, we need 2 shares to spend ~$1 USD
-	orderSize := 2.0 // ~$1 USD at 0.50 price
+	orderSize := 2.0// ~$1 USD at 0.50 price
 
 	// Test 1: BUY order at 0.50 price
 	fmt.Println(strings.Repeat("=", 70))
