@@ -187,48 +187,65 @@ jobs:
       - name: Detect target machine architecture
         id: detect-arch
         run: |
+          # First, list what binaries are available
+          echo "=== Available cross-platform binaries ==="
+          find cross-platform-artifacts -type f -name "janus-bot-*" | sort
+          
+          echo ""
+          echo "=== Detecting target machine architecture via SSH ==="
+          
           sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST << 'EOF' > machine-info.txt
           # Detect machine architecture and info
           echo "=== Machine Architecture Detection ==="
           echo "Hostname: $(uname -n)"
           echo "Kernel: $(uname -s)"
           echo "Hardware: $(uname -m)"
-          echo "Processor: $(uname -p)"
+          echo "Processor: $(uname -p 2>/dev/null || echo 'N/A')"
           
           # Detect if Raspberry Pi
-          if grep -q "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
-            echo "Device: Raspberry Pi"
-            echo "Model: $(cat /proc/device-tree/model)"
+          if [ -f /proc/device-tree/model ]; then
+            DEVICE_MODEL=$(cat /proc/device-tree/model 2>/dev/null || echo "Unknown")
+            echo "Device Model: $DEVICE_MODEL"
+            if echo "$DEVICE_MODEL" | grep -q "Raspberry Pi"; then
+              echo "Device: Raspberry Pi"
+            else
+              echo "Device: Generic Linux"
+            fi
           else
-            echo "Device: Generic Linux"
+            echo "Device: Generic Linux (no device-tree)"
           fi
           
           # Get architecture for binary selection
           ARCH=$(uname -m)
-          if [[ "$ARCH" == "aarch64" ]]; then
-            echo "Binary Architecture: arm64"
-          elif [[ "$ARCH" == "armv7l" ]]; then
-            echo "Binary Architecture: arm (note: only arm64 available, may need to build arm32)"
-          elif [[ "$ARCH" == "x86_64" ]]; then
-            echo "Binary Architecture: amd64"
+          echo "Raw Architecture: $ARCH"
+          
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "DETECTED_ARCH=arm64"
+          elif [ "$ARCH" = "armv7l" ]; then
+            echo "DETECTED_ARCH=arm (WARNING: only arm64 builds available)"
+          elif [ "$ARCH" = "x86_64" ]; then
+            echo "DETECTED_ARCH=amd64"
           else
-            echo "Binary Architecture: unknown ($ARCH)"
+            echo "DETECTED_ARCH=unknown"
           fi
           EOF
           
           cat machine-info.txt
           
-          # Parse architecture
-          if grep -q "aarch64" machine-info.txt; then
+          # Parse architecture from output
+          if grep -q "DETECTED_ARCH=arm64" machine-info.txt; then
             echo "TARGET_ARCH=arm64" >> $GITHUB_OUTPUT
             echo "TARGET_OS=linux" >> $GITHUB_OUTPUT
-          elif grep -q "x86_64" machine-info.txt; then
+            echo "Detected: ARM64 (Raspberry Pi or ARM64 system)"
+          elif grep -q "DETECTED_ARCH=amd64" machine-info.txt; then
             echo "TARGET_ARCH=amd64" >> $GITHUB_OUTPUT
             echo "TARGET_OS=linux" >> $GITHUB_OUTPUT
+            echo "Detected: AMD64 (x86_64 system)"
           else
-            echo "WARNING: Could not detect architecture, defaulting to amd64"
-            echo "TARGET_ARCH=amd64" >> $GITHUB_OUTPUT
+            echo "WARNING: Could not reliably detect architecture"
+            echo "TARGET_ARCH=arm64" >> $GITHUB_OUTPUT
             echo "TARGET_OS=linux" >> $GITHUB_OUTPUT
+            echo "Defaulting to: ARM64 (recommended for Raspberry Pi)"
           fi
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -237,25 +254,55 @@ jobs:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
 
       - name: Select appropriate binary for target architecture
+        id: select-binary
         run: |
           TARGET_ARCH="${{ steps.detect-arch.outputs.TARGET_ARCH }}"
           TARGET_OS="${{ steps.detect-arch.outputs.TARGET_OS }}"
           
+          echo "=== Binary Selection ==="
           echo "Target Architecture: $TARGET_ARCH"
           echo "Target OS: $TARGET_OS"
           
-          # Find the appropriate binary
+          # List all available binaries
+          echo ""
+          echo "Available cross-platform binaries:"
+          find cross-platform-artifacts -type f -name "janus-bot-*" | sort
+          
+          # Try to find the binary with different path patterns
+          # Artifacts are stored in subdirectories like janus-bot-linux-arm64/janus-bot-linux-arm64
           BINARY_PATH="cross-platform-artifacts/janus-bot-$TARGET_OS-$TARGET_ARCH/janus-bot-$TARGET_OS-$TARGET_ARCH"
           
           if [ -f "$BINARY_PATH" ]; then
-            echo "Found appropriate binary: $BINARY_PATH"
+            echo "✓ Found binary at: $BINARY_PATH"
             cp "$BINARY_PATH" release-artifacts/janus-bot-platform-specific
             chmod +x release-artifacts/janus-bot-platform-specific
+            echo "BINARY_SOURCE=platform-specific" >> $GITHUB_OUTPUT
           else
-            echo "WARNING: Could not find platform-specific binary at $BINARY_PATH"
-            echo "Available binaries:"
-            find cross-platform-artifacts -name "janus-bot-*" -type f
-            echo "Falling back to default binary from build job"
+            # Try finding it without the directory prefix
+            ALT_BINARY=$(find cross-platform-artifacts -type f -name "janus-bot-$TARGET_OS-$TARGET_ARCH" | head -1)
+            if [ -n "$ALT_BINARY" ] && [ -f "$ALT_BINARY" ]; then
+              echo "✓ Found binary at: $ALT_BINARY"
+              cp "$ALT_BINARY" release-artifacts/janus-bot-platform-specific
+              chmod +x release-artifacts/janus-bot-platform-specific
+              echo "BINARY_SOURCE=platform-specific" >> $GITHUB_OUTPUT
+            else
+              echo "⚠ WARNING: Could not find platform-specific binary"
+              echo "Searched for: $BINARY_PATH"
+              echo "Using default binary from build job (WARNING: May not be compatible!)"
+              echo "BINARY_SOURCE=default-fallback" >> $GITHUB_OUTPUT
+            fi
+          fi
+          
+          # Always verify the binary exists before proceeding
+          if [ -f "release-artifacts/janus-bot-platform-specific" ]; then
+            echo "✓ Binary ready for upload: release-artifacts/janus-bot-platform-specific"
+            file release-artifacts/janus-bot-platform-specific
+          elif [ -f "release-artifacts/janus-bot" ]; then
+            echo "Using fallback binary: release-artifacts/janus-bot"
+            file release-artifacts/janus-bot
+          else
+            echo "ERROR: No binary available for upload!"
+            exit 1
           fi
 
       - name: Create bot directory on server
@@ -269,16 +316,24 @@ jobs:
 
       - name: Upload bot binary to server
         run: |
-          # Use platform-specific binary if available, otherwise fall back to default
+          # Always prefer platform-specific binary if available
           if [ -f "release-artifacts/janus-bot-platform-specific" ]; then
             BINARY_FILE="release-artifacts/janus-bot-platform-specific"
-            echo "Uploading platform-specific binary for ${{ steps.detect-arch.outputs.TARGET_ARCH }}"
-          else
+            BINARY_SOURCE="${{ steps.select-binary.outputs.BINARY_SOURCE }}"
+            echo "Uploading platform-specific binary ($BINARY_SOURCE) for ${{ steps.detect-arch.outputs.TARGET_ARCH }}"
+          elif [ -f "release-artifacts/janus-bot" ]; then
             BINARY_FILE="release-artifacts/janus-bot"
-            echo "Uploading default binary"
+            echo "WARNING: Uploading default binary (may not be compatible with target architecture!)"
+          else
+            echo "ERROR: No binary found to upload!"
+            exit 1
           fi
           
+          echo "Binary file: $BINARY_FILE"
+          file "$BINARY_FILE"
+          
           sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no -P $SSH_PORT "$BINARY_FILE" $SSH_USERNAME@$SSH_HOST:~/janus-bot/janus-bot
+          echo "✓ Binary uploaded successfully"
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
