@@ -75,7 +75,7 @@ func main() {
 
 	// Create and initialize strategy
 	var strategy strategies.Strategy
-	strategy = strategies.NewLateEntryUpOnlyStrategy(tradingEngine)
+	strategy = strategies.NewLateEntryStrategy(tradingEngine)
 	log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
 
 	// Create market logger for analytics

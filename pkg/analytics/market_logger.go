@@ -72,10 +72,22 @@ func NewMarketLogger(baseLogDir string) (*MarketLogger, error) {
 	}
 
 	// Session ID based on current timestamp
-	sessionID := time.Now().Format("2006-01-02_15-04-05")
+	// Use YYYYMMDD format so all runs on the same day share the same session
+	sessionID := time.Now().Format("2006-01-02_150405")
 	sessionDir := filepath.Join(logDir, sessionID)
-	if err := os.MkdirAll(sessionDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create session directory: %w", err)
+	
+	// Check if session directory already exists
+	// If it does, we're continuing a session (paper trading run), so append
+	sessionExists := false
+	if info, err := os.Stat(sessionDir); err == nil && info.IsDir() {
+		sessionExists = true
+	}
+	
+	if !sessionExists {
+		// Create new session directory
+		if err := os.MkdirAll(sessionDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create session directory: %w", err)
+		}
 	}
 
 	ml := &MarketLogger{
@@ -83,35 +95,41 @@ func NewMarketLogger(baseLogDir string) (*MarketLogger, error) {
 		sessionID: sessionID,
 	}
 
-	// Initialize JSON file
+	// Initialize JSON file in append mode
 	jsonPath := filepath.Join(sessionDir, "market_performance.jsonl")
-	jsonFile, err := os.Create(jsonPath)
+	jsonFile, err := os.OpenFile(jsonPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create JSON log file: %w", err)
+		return nil, fmt.Errorf("failed to open JSON log file: %w", err)
 	}
 	ml.jsonFile = jsonFile
 
-	// Initialize CSV file with headers
+	// Initialize CSV file
+	// If file exists, append; otherwise create with headers
 	csvPath := filepath.Join(sessionDir, "market_performance.csv")
-	csvFile, err := os.Create(csvPath)
+	csvFileInfo, csvErr := os.Stat(csvPath)
+	csvExists := csvErr == nil && !csvFileInfo.IsDir()
+	
+	csvFile, err := os.OpenFile(csvPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		jsonFile.Close()
-		return nil, fmt.Errorf("failed to create CSV log file: %w", err)
+		return nil, fmt.Errorf("failed to open CSV log file: %w", err)
 	}
 	ml.csvFile = csvFile
 	ml.csvWriter = csv.NewWriter(csvFile)
 
-	// Write CSV headers
-	headers := []string{
-		"timestamp", "market_id", "window_duration_sec",
-		"position_count", "correct_positions", "wrong_positions", "win_rate_pct",
-		"gross_profit_usdc", "total_fees_usdc", "net_profit_usdc", "avg_profit_pct",
-		"avg_entry_price", "avg_exit_price", "total_size_traded",
-		"final_up_price", "final_down_price", "resolution",
-		"account_balance_usdc", "cumulative_profit_usdc",
+	// Write CSV headers only if file is new
+	if !csvExists {
+		headers := []string{
+			"timestamp", "market_id", "window_duration_sec",
+			"position_count", "correct_positions", "wrong_positions", "win_rate_pct",
+			"gross_profit_usdc", "total_fees_usdc", "net_profit_usdc", "avg_profit_pct",
+			"avg_entry_price", "avg_exit_price", "total_size_traded",
+			"final_up_price", "final_down_price", "resolution",
+			"account_balance_usdc", "cumulative_profit_usdc",
+		}
+		ml.csvWriter.Write(headers)
+		ml.csvWriter.Flush()
 	}
-	ml.csvWriter.Write(headers)
-	ml.csvWriter.Flush()
 
 	return ml, nil
 }
