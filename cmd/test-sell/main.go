@@ -99,25 +99,96 @@ func main() {
 	fmt.Println("🎯 SELL ORDER TEST - BTC 5-Minute Market")
 	fmt.Println(strings.Repeat("=", 70))
 	fmt.Printf("Market ID: %s\n", marketID)
-	fmt.Println("Placing a SELL order for 1 share of YES at $0.90")
+	fmt.Println("Step 1: Fetch market orderbook to get current lowest ask")
+	fmt.Println("Step 2: BUY 5 shares at the lowest ask price")
+	fmt.Println("Step 3: Fetch market orderbook to get current best bid")
+	fmt.Println("Step 4: SELL 5 shares at the best bid price")
 	fmt.Println()
 
-	// Sell 1 share at $0.90
-	// NOTE: To sell, you must first own the shares. Since we don't have any shares yet,
-	// we'll place a SELL order at a high price to test order placement.
-	orderSize := 1.0
-	price := 0.90
+	// Step 1: First BUY shares at a low price so we have inventory to sell
+	// Polymarket minimum order size is 5 shares, so buy 5 shares
+	buyOrderSize := 5.0
+	buyPrice := 0.50
 
 	fmt.Println(strings.Repeat("=", 70))
-	fmt.Printf("Test: SELL 1 Share of YES @ $%.2f\n", price)
+	fmt.Printf("Step 1: Fetching market orderbook to get lowest ask price\n")
 	fmt.Println(strings.Repeat("=", 70))
-	orderID, err := engine.PlaceOrder(marketID, "SELL", price, orderSize)
-	if err == nil && orderID != "" {
-		fmt.Printf("✅ Test passed - Order placed successfully\n")
-		fmt.Printf("   Order ID: %s\n", orderID)
+	
+	// Fetch the market book to get the best ask (lowest ask price)
+	marketBook, bookErr := client.GetMarketBook(marketID)
+	if bookErr != nil {
+		fmt.Printf("⚠️  Could not fetch market book: %v\n", bookErr)
+		fmt.Printf("   Using fallback price: $%.2f\n", buyPrice)
+	} else {
+		// Parse the market book to get bid/ask prices
+		parseErr := marketBook.ParseBook()
+		if parseErr != nil {
+			fmt.Printf("⚠️  Could not parse market book: %v\n", parseErr)
+			fmt.Printf("   Using fallback price: $%.2f\n", buyPrice)
+		} else {
+			if marketBook.BestAskParsed > 0 {
+				buyPrice = marketBook.BestAskParsed
+				fmt.Printf("✅ Best ask price: $%.2f (size: %.2f)\n", marketBook.BestAskParsed, marketBook.BestAskSizeParsed)
+			} else {
+				fmt.Printf("⚠️  No asks available in market book\n")
+				fmt.Printf("   Using fallback price: $%.2f\n", buyPrice)
+			}
+		}
+	}
+
+	fmt.Println(strings.Repeat("=", 70))
+	fmt.Printf("Step 2: BUY %v Shares @ $%.2f\n", buyOrderSize, buyPrice)
+	fmt.Println(strings.Repeat("=", 70))
+	buyOrderID, buyErr := engine.PlaceOrder(marketID, "BUY", buyPrice, buyOrderSize)
+	if buyErr == nil && buyOrderID != "" {
+		fmt.Printf("✅ BUY order placed successfully\n")
+		fmt.Printf("   Order ID: %s\n", buyOrderID)
 		testsPassed++
 	} else {
-		fmt.Printf("❌ Test failed - Error: %v\n", err)
+		fmt.Printf("❌ BUY order failed - Error: %v\n", buyErr)
+		testsFailed++
+	}
+
+	// Step 2: Now SELL 5 shares at a higher price (respecting minimum order size of 5)
+	sellOrderSize := 5.0
+	sellPrice := 0.90
+
+	fmt.Println(strings.Repeat("=", 70))
+	fmt.Printf("Step 3: Fetching market orderbook to get best bid price\n")
+	fmt.Println(strings.Repeat("=", 70))
+	
+	// Fetch the market book to get the best bid
+	marketBook, bookErr = client.GetMarketBook(marketID)
+	if bookErr != nil {
+		fmt.Printf("⚠️  Could not fetch market book: %v\n", bookErr)
+		fmt.Printf("   Using fallback price: $%.2f\n", sellPrice)
+	} else {
+		// Parse the market book to get bid/ask prices
+		parseErr := marketBook.ParseBook()
+		if parseErr != nil {
+			fmt.Printf("⚠️  Could not parse market book: %v\n", parseErr)
+			fmt.Printf("   Using fallback price: $%.2f\n", sellPrice)
+		} else {
+			if marketBook.BestBidParsed > 0 {
+				sellPrice = marketBook.BestBidParsed
+				fmt.Printf("✅ Best bid price: $%.2f (size: %.2f)\n", marketBook.BestBidParsed, marketBook.BestBidSizeParsed)
+			} else {
+				fmt.Printf("⚠️  No bids available in market book\n")
+				fmt.Printf("   Using fallback price: $%.2f\n", sellPrice)
+			}
+		}
+	}
+
+	fmt.Println(strings.Repeat("=", 70))
+	fmt.Printf("Step 4: SELL %v Shares @ $%.2f\n", sellOrderSize, sellPrice)
+	fmt.Println(strings.Repeat("=", 70))
+	sellOrderID, sellErr := engine.PlaceOrder(marketID, "SELL", sellPrice, sellOrderSize)
+	if sellErr == nil && sellOrderID != "" {
+		fmt.Printf("✅ SELL order placed successfully\n")
+		fmt.Printf("   Order ID: %s\n", sellOrderID)
+		testsPassed++
+	} else {
+		fmt.Printf("❌ SELL order failed - Error: %v\n", sellErr)
 		testsFailed++
 	}
 
@@ -129,8 +200,12 @@ func main() {
 	fmt.Printf("❌ Failed: %d\n", testsFailed)
 	fmt.Printf("📊 Total:  %d\n", testsPassed+testsFailed)
 	fmt.Println()
-	fmt.Println("⚠️  This is a REAL order placed on the Polymarket production API")
-	fmt.Println("    Selling 1 share of YES at $0.90")
+	fmt.Println("⚠️  These are REAL orders placed on the Polymarket production API")
+	fmt.Println("    Note: Polymarket has a minimum order size of 5 shares")
+	fmt.Printf("    Step 1: Fetched market orderbook for lowest ask\n")
+	fmt.Printf("    Step 2: Bought 5 shares at $%.2f lowest ask price\n", buyPrice)
+	fmt.Printf("    Step 3: Fetched market orderbook for best bid\n")
+	fmt.Printf("    Step 4: Sold 5 shares at $%.2f best bid price\n", sellPrice)
 	fmt.Println()
 
 	if testsFailed > 0 {

@@ -35,10 +35,14 @@ jobs:
       - name: Create .env file with secrets
         run: |
           cat > janus-bot.env << 'EOF'
-          POLYMARKET_API_KEY=${{ secrets.POLYMARKET_API_KEY }}
-          POLYMARKET_PRIVATE_KEY=${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          # For Live Trading: Only PRIVATE_KEY and PROXY_ADDRESS are required
+          # API credentials are derived from the private key using L1→L2 auth
+          PRIVATE_KEY=${{ secrets.PRIVATE_KEY }}
+          PROXY_ADDRESS=${{ secrets.PROXY_ADDRESS }}
+          
+          # Optional market settings
           MARKET_FETCH_INTERVAL_MS=${{ secrets.MARKET_FETCH_INTERVAL_MS || '5000' }}
-          PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'true' }}
+          PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'false' }}
           EOF
           
           ls -la janus-bot.env
@@ -371,10 +375,14 @@ jobs:
         run: |
           sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -p $SSH_PORT $SSH_USERNAME@$SSH_HOST << 'SSH_SCRIPT'
           cat > ~/janus-bot/.env << 'EOF'
-          POLYMARKET_API_KEY=${{ secrets.POLYMARKET_API_KEY }}
-          POLYMARKET_PRIVATE_KEY=${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          # For Live Trading: Only PRIVATE_KEY and PROXY_ADDRESS are required
+          # API credentials are derived from the private key using L1→L2 auth
+          PRIVATE_KEY=${{ secrets.PRIVATE_KEY }}
+          PROXY_ADDRESS=${{ secrets.PROXY_ADDRESS }}
+          
+          # Optional market settings
           MARKET_FETCH_INTERVAL_MS=${{ secrets.MARKET_FETCH_INTERVAL_MS || '5000' }}
-          PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'true' }}
+          PAPER_TRADING_ENABLED=${{ secrets.PAPER_TRADING_ENABLED || 'false' }}
           EOF
           SSH_SCRIPT
         env:

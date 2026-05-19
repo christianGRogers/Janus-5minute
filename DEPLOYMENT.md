@@ -18,19 +18,21 @@ To use the automated build and deployment, you need to configure GitHub Secrets 
 
 Click **New repository secret** and add the following:
 
-#### Required Secrets:
+#### Required Secrets for Live Trading:
 
-| Secret Name | Value | Example |
-|-------------|-------|---------|
-| `POLYMARKET_API_KEY` | Your Polymarket API key | `pk_123abc...` |
-| `POLYMARKET_PRIVATE_KEY` | Your Polymarket private key | `0x123abc...` |
+| Secret Name | Value | Description |
+|-------------|-------|-------------|
+| `PRIVATE_KEY` | Your Ethereum private key | Your wallet's private key (from MetaMask, hardware wallet, etc.) - WITHOUT "0x" prefix. Format: `abc123def456...` |
+| `PROXY_ADDRESS` | Your Polymarket proxy wallet address | Your account's proxy wallet address on Polygon. Format: `0x1234567890abcdef...` |
+
+**Note:** API credentials (`API_KEY`, `API_SECRET`, `API_PASSPHRASE`) are automatically derived from your private key using L1→L2 authentication, so they don't need to be provided separately.
 
 #### Optional Secrets:
 
 | Secret Name | Value | Default |
 |-------------|-------|---------|
 | `MARKET_FETCH_INTERVAL_MS` | Market data fetch interval in milliseconds | `5000` |
-| `PAPER_TRADING_ENABLED` | Enable paper trading mode (`true`/`false`) | `true` |
+| `PAPER_TRADING_ENABLED` | Enable paper trading mode (`true`/`false`) | `false` |
 
 ### Step 3: Verify Secrets Are Set
 
@@ -90,10 +92,14 @@ You can manually trigger the workflow:
 2. **Create `.env` file** with your secrets:
    ```bash
    cat > janus-bot.env << 'EOF'
-   POLYMARKET_API_KEY=your_api_key_here
-   POLYMARKET_PRIVATE_KEY=your_private_key_here
+   # For Live Trading: Only PRIVATE_KEY and PROXY_ADDRESS are required
+   # API credentials are derived from the private key using L1→L2 auth
+   PRIVATE_KEY=your_private_key_here
+   PROXY_ADDRESS=your_proxy_wallet_address_here
+   
+   # Optional market settings
    MARKET_FETCH_INTERVAL_MS=5000
-   PAPER_TRADING_ENABLED=true
+   PAPER_TRADING_ENABLED=false
    EOF
    ```
 
@@ -123,8 +129,9 @@ export $(cat janus-bot.env | xargs)
 
 Or manually:
 ```powershell
-$env:POLYMARKET_API_KEY = "your_key"
-$env:POLYMARKET_PRIVATE_KEY = "your_private_key"
+$env:PRIVATE_KEY = "your_private_key"
+$env:PROXY_ADDRESS = "your_proxy_wallet_address"
+$env:PAPER_TRADING_ENABLED = "false"
 .\janus-bot.exe
 ```
 

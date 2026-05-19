@@ -15,16 +15,18 @@ import (
 // 2. Looks for high price confidence (0.80-0.90) for safe small wins
 // 3. In the last few seconds, aggressively buys any available shares if confidence reaches 0.98-0.99
 // 4. Increases price check frequency for responsiveness
+// 5. CRITICAL: Tracks inventory - only allows SELL when shares are actually owned
 type LateEntryStrategy struct {
 	*BaseStrategy
 	windowStartTime time.Time
 	lastCheckTime   time.Time
 	lastTradeTime   time.Time
-	positionsThisWindow map[string]bool // Track if we've already traded this market this window
-	minBuyPrice float64                  // Minimum price to buy UP (only buy high confidence: 0.75+)
-	maxSellPrice float64                 // Maximum price to sell UP short (only sell at very low: 0.25-)
-	minWinConfidence float64             // Minimum confidence to trade in final minute (0.75 = 25% distance from 0.50)
-	extremeConfidence float64            // Extreme confidence for last-second trades (0.98+)
+	positionsThisWindow map[string]bool    // Track if we've already traded this market this window
+	ownedInventory      map[string]float64 // Track shares owned by market ID (for proper sell gating)
+	minBuyPrice float64                    // Minimum price to buy UP (only buy high confidence: 0.75+)
+	maxSellPrice float64                   // Maximum price to sell UP short (only sell at very low: 0.25-)
+	minWinConfidence float64               // Minimum confidence to trade in final minute (0.75 = 25% distance from 0.50)
+	extremeConfidence float64              // Extreme confidence for last-second trades (0.98+)
 }
 
 // NewLateEntryStrategy creates a new late entry strategy
@@ -36,6 +38,7 @@ func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
 		windowStartTime:     time.Now(),
 		lastCheckTime:       time.Now(),
 		positionsThisWindow: make(map[string]bool),
+		ownedInventory:      make(map[string]float64), // Track inventory by market
 		minBuyPrice:         0.75,        // Only buy UP when very high confidence (0.75+)
 		maxSellPrice:        0.25,        // Only sell UP when very low (0.25-) - avoid low confidence shorts
 		minWinConfidence:    0.75,        // 25% distance from 0.50 midpoint
@@ -225,12 +228,26 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			}
 
 			if extremeLowMet && minSizeForSell {
-				// UP is near certain to lose - SELL it (short)
+				// UP is near certain to lose - SELL it
+				// BUT: Only sell if we actually own shares in this market
+				ownedShares := les.ownedInventory[marketID]
+				if ownedShares <= 0 {
+					log.Printf("[LateEntry] %s: SELL signal skipped - no inventory owned (own: %.0f)", marketID, ownedShares)
+					// Skip to next market instead of placing signal
+					continue
+				}
+				
 				positionSize := math.Min(
 					maxPosSize / book.BestBidParsed,
 					book.BestBidSizeParsed*0.75,
 				)
-				log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (extreme low: %.4f <= %.4f), size: %.0f", marketID, midPrice, 1.0-les.extremeConfidence, positionSize)
+				// Cap position size to what we actually own
+				if positionSize > ownedShares {
+					positionSize = ownedShares
+				}
+				
+				log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (extreme low: %.4f <= %.4f), size: %.0f (own: %.0f)", 
+					marketID, midPrice, 1.0-les.extremeConfidence, positionSize, ownedShares)
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					les.positionsThisWindow[marketID] = true
@@ -277,22 +294,33 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		// SELL: Only when UP price is very low (0.25-) - AVOID medium confidence shorts
 		if lowConfSellMet && minSizeForConservativeSell {
 			// Very conservative position size for shorts
-			positionSize := math.Min(
-				(maxPosSize * 0.2) / book.BestBidParsed, // Only 20% of max
-				book.BestBidSizeParsed*0.1, // Take only 10% of liquidity
-			)
-			log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (low conf: %.4f <= %.4f), size: %.0f", marketID, midPrice, les.maxSellPrice, positionSize)
-			if positionSize > 0.5 {
-				les.lastTradeTime = time.Now()
-				les.positionsThisWindow[marketID] = true
-				return &TradeSignal{
-					ShouldTrade:        true,
-					MarketID:           marketID,
-					Side:               "SELL",
-					Price:              book.BestBidParsed,
-					Size:               positionSize,
-					AvailableLiquidity: book.BestBidSizeParsed,
-					Outcome:            "UP",
+			// BUT: Only sell if we actually own shares in this market
+			ownedShares := les.ownedInventory[marketID]
+			if ownedShares <= 0 {
+				log.Printf("[LateEntry] %s: Conservative SELL signal skipped - no inventory owned (own: %.0f)", marketID, ownedShares)
+			} else {
+				positionSize := math.Min(
+					(maxPosSize * 0.2) / book.BestBidParsed, // Only 20% of max
+					book.BestBidSizeParsed*0.1, // Take only 10% of liquidity
+				)
+				// Cap position size to what we actually own
+				if positionSize > ownedShares {
+					positionSize = ownedShares
+				}
+				
+				log.Printf("[LateEntry] %s: ✓ SIGNAL - SELL (low conf: %.4f <= %.4f), size: %.0f (own: %.0f)", marketID, midPrice, les.maxSellPrice, positionSize, ownedShares)
+				if positionSize > 0.5 {
+					les.lastTradeTime = time.Now()
+					les.positionsThisWindow[marketID] = true
+					return &TradeSignal{
+						ShouldTrade:        true,
+						MarketID:           marketID,
+						Side:               "SELL",
+						Price:              book.BestBidParsed,
+						Size:               positionSize,
+						AvailableLiquidity: book.BestBidSizeParsed,
+						Outcome:            "UP",
+					}
 				}
 			}
 		}
@@ -302,8 +330,20 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 }
 
 // OnOrderPlaced is called after an order is executed
+// This tracks inventory: BUY adds to ownedInventory, SELL subtracts from it
 func (les *LateEntryStrategy) OnOrderPlaced(marketID string, side string, price float64, size float64) {
-	// Could log trades or update statistics here
+	if side == "BUY" {
+		// Add to inventory when we BUY
+		les.ownedInventory[marketID] += size
+		log.Printf("[LateEntry] %s: Inventory updated - BUY +%.0f shares (total: %.0f)", marketID, size, les.ownedInventory[marketID])
+	} else if side == "SELL" {
+		// Subtract from inventory when we SELL
+		les.ownedInventory[marketID] -= size
+		if les.ownedInventory[marketID] < 0 {
+			les.ownedInventory[marketID] = 0 // Prevent negative inventory
+		}
+		log.Printf("[LateEntry] %s: Inventory updated - SELL -%.0f shares (total: %.0f)", marketID, size, les.ownedInventory[marketID])
+	}
 }
 
 // OnMarketWindowChange is called when a new 5-minute window begins
@@ -311,6 +351,7 @@ func (les *LateEntryStrategy) OnMarketWindowChange() {
 	les.windowStartTime = time.Now()
 	les.lastCheckTime = time.Now()
 	les.positionsThisWindow = make(map[string]bool) // Reset for new window
+	les.ownedInventory = make(map[string]float64)   // Reset inventory for new window
 }
 
 // Reset clears internal state
@@ -318,7 +359,8 @@ func (les *LateEntryStrategy) Reset() {
 	les.windowStartTime = time.Now()
 	les.lastCheckTime = time.Now()
 	les.positionsThisWindow = make(map[string]bool)
-	les.lastTradeTime = time.Time{} // Reset last trade time
+	les.ownedInventory = make(map[string]float64)  // Reset inventory
+	les.lastTradeTime = time.Time{}                // Reset last trade time
 }
 
 // boolToCheck converts a boolean to a visual indicator (✓ or ✗)
