@@ -622,16 +622,105 @@ func (lte *LiveTradingEngine) GetTradeHistory() []*PaperTrade {
 
 // CloseMarketPositions closes all positions for a market at exit price
 func (lte *LiveTradingEngine) CloseMarketPositions(marketID string, exitPrice float64) []*ClosedPosition {
-	// In live trading, positions are closed by placing opposite orders via PlaceOrder
-	// This is a placeholder for analytics purposes
-	return []*ClosedPosition{}
+	lte.mu.Lock()
+	defer lte.mu.Unlock()
+
+	var closedPositions []*ClosedPosition
+	keysToDelete := []string{}
+
+	// Iterate through all positions and find those for this market
+	for posKey, pos := range lte.positions {
+		if strings.HasPrefix(posKey, marketID) {
+			// Convert PaperPosition to ClosedPosition
+			exitFee := lte.calculateExitFee(pos.MarketID, pos.Outcome, exitPrice, pos.Size)
+			grossProfit := (exitPrice - pos.EntryPrice) * pos.Size
+			if pos.Side == "SELL" {
+				grossProfit = (pos.EntryPrice - exitPrice) * pos.Size
+			}
+			netProfit := grossProfit - pos.EntryFee - exitFee
+
+			closedPos := &ClosedPosition{
+				OrderID:        pos.OrderID,
+				MarketID:       pos.MarketID,
+				Outcome:        pos.Outcome,
+				Side:           pos.Side,
+				EntryPrice:     pos.EntryPrice,
+				ExitPrice:      exitPrice,
+				Size:           pos.Size,
+				EntryFee:       pos.EntryFee,
+				ExitFee:        exitFee,
+				ProfitLoss:     grossProfit,
+				NetProfitLoss:  netProfit,
+				ProfitPct:      (netProfit / (pos.EntryPrice * pos.Size)) * 100,
+				EntryTime:      pos.EntryTime,
+				ExitTime:       time.Now(),
+			}
+			closedPositions = append(closedPositions, closedPos)
+			keysToDelete = append(keysToDelete, posKey)
+		}
+	}
+
+	// Remove closed positions from tracking
+	for _, key := range keysToDelete {
+		delete(lte.positions, key)
+	}
+
+	return closedPositions
 }
 
 // CloseMarketPositionsByOutcome closes positions for a specific outcome at exit price
 func (lte *LiveTradingEngine) CloseMarketPositionsByOutcome(marketID string, outcome string, exitPrice float64) []*ClosedPosition {
-	// In live trading, positions are closed by placing opposite orders via PlaceOrder
-	// This is a placeholder for analytics purposes
-	return []*ClosedPosition{}
+	lte.mu.Lock()
+	defer lte.mu.Unlock()
+
+	var closedPositions []*ClosedPosition
+	keysToDelete := []string{}
+
+	// Iterate through all positions and find those matching market and outcome
+	for posKey, pos := range lte.positions {
+		if pos.MarketID == marketID && pos.Outcome == outcome {
+			// Convert PaperPosition to ClosedPosition
+			exitFee := lte.calculateExitFee(pos.MarketID, pos.Outcome, exitPrice, pos.Size)
+			grossProfit := (exitPrice - pos.EntryPrice) * pos.Size
+			if pos.Side == "SELL" {
+				grossProfit = (pos.EntryPrice - exitPrice) * pos.Size
+			}
+			netProfit := grossProfit - pos.EntryFee - exitFee
+
+			closedPos := &ClosedPosition{
+				OrderID:        pos.OrderID,
+				MarketID:       pos.MarketID,
+				Outcome:        pos.Outcome,
+				Side:           pos.Side,
+				EntryPrice:     pos.EntryPrice,
+				ExitPrice:      exitPrice,
+				Size:           pos.Size,
+				EntryFee:       pos.EntryFee,
+				ExitFee:        exitFee,
+				ProfitLoss:     grossProfit,
+				NetProfitLoss:  netProfit,
+				ProfitPct:      (netProfit / (pos.EntryPrice * pos.Size)) * 100,
+				EntryTime:      pos.EntryTime,
+				ExitTime:       time.Now(),
+			}
+			closedPositions = append(closedPositions, closedPos)
+			keysToDelete = append(keysToDelete, posKey)
+		}
+	}
+
+	// Remove closed positions from tracking
+	for _, key := range keysToDelete {
+		delete(lte.positions, key)
+	}
+
+	return closedPositions
+}
+
+// calculateExitFee calculates the taker fee for an exit order using Polymarket formula
+// fee = C × 0.072020 × p × (1 - p)
+// where C is the size and p is the price
+func (lte *LiveTradingEngine) calculateExitFee(marketID string, outcome string, exitPrice float64, size float64) float64 {
+	return size * 0.072020 * exitPrice * (1 - exitPrice)
 }
 
 // GetCumulativeProfit returns 0 in live trading (use balance instead)
