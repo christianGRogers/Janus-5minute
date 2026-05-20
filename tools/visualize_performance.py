@@ -27,17 +27,19 @@ from matplotlib.gridspec import GridSpec
 class BotPerformanceVisualizer:
     """Visualizes Janus Bot trading performance data."""
 
-    def __init__(self, csv_file: str, output_dir: str = None):
+    def __init__(self, csv_file: str, output_dir: str = None, current_balance: float = None):
         """
         Initialize the visualizer.
 
         Args:
             csv_file: Path to the market_performance.csv file
             output_dir: Directory to save output charts (default: ./charts)
+            current_balance: Current account balance to fill in gap if there are unlogged trades
         """
         self.csv_file = Path(csv_file)
         self.output_dir = Path(output_dir) if output_dir else Path("./charts")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.current_balance = current_balance
 
         # Set style
         sns.set_theme(style="darkgrid")
@@ -87,10 +89,36 @@ class BotPerformanceVisualizer:
 
     def _prepare_data(self):
         """Prepare data for visualization."""
-        # Calculate accurate balance: starting balance (10000) + cumulative profit
-        starting_balance = 20.0
-        self.df["calculated_balance"] = starting_balance + self.df["cumulative_profit_usdc"]
-        self.starting_balance = starting_balance
+        # For live trading: account_balance_usdc is the actual portfolio value (cash + positions)
+        # For paper trading: account_balance_usdc = starting_balance + cumulative_profit
+        # In both cases, we use account_balance_usdc directly as the accurate balance
+        self.df["calculated_balance"] = self.df["account_balance_usdc"]
+        
+        # Determine starting balance from the first row's account balance
+        # (This will be correct for both paper and live trading)
+        if len(self.df) > 0:
+            # For paper trading: first account_balance = starting_balance + first_day_profit
+            # For live trading: first account_balance = starting_balance + first_day_profit
+            # We need to calculate backward: starting_balance = first_account_balance - cumulative_profit_at_start
+            # But the first row's cumulative_profit includes all trades up to that point
+            # So we calculate it as: starting_balance = account_balance - cumulative_profit
+            first_starting_balance = self.df.iloc[0]["account_balance_usdc"] - self.df.iloc[0]["cumulative_profit_usdc"]
+            self.starting_balance = first_starting_balance if first_starting_balance > 0 else self.df.iloc[0]["account_balance_usdc"]
+            
+            # If current balance is provided and differs from last logged balance, add it as a final row
+            if self.current_balance is not None and len(self.df) > 0:
+                last_balance = self.df.iloc[-1]["account_balance_usdc"]
+                if abs(self.current_balance - last_balance) > 0.0001:  # If there's a gap
+                    last_row = self.df.iloc[-1].copy()
+                    last_row["timestamp"] = pd.Timestamp.now()
+                    last_row["account_balance_usdc"] = self.current_balance
+                    last_row["calculated_balance"] = self.current_balance
+                    last_row["cumulative_profit_usdc"] = self.current_balance - self.starting_balance
+                    # Set net profit for this unlogged period
+                    last_row["net_profit_usdc"] = self.current_balance - last_balance
+                    self.df = pd.concat([self.df, pd.DataFrame([last_row])], ignore_index=True)
+        else:
+            self.starting_balance = 0
         
         self.df["profit_color"] = self.df["net_profit_usdc"].apply(
             lambda x: "green" if x > 0 else "red"
@@ -574,10 +602,18 @@ Examples:
         help="Output directory for charts (default: ./charts)",
     )
 
+    parser.add_argument(
+        "--current_balance",
+        "-b",
+        type=float,
+        default=None,
+        help="Current account balance to fill in gaps from unlogged trades (e.g., -b 15.14)",
+    )
+
     args = parser.parse_args()
 
     try:
-        visualizer = BotPerformanceVisualizer(args.csv_file, args.output)
+        visualizer = BotPerformanceVisualizer(args.csv_file, args.output, args.current_balance)
         visualizer.generate_all_charts()
 
     except FileNotFoundError as e:

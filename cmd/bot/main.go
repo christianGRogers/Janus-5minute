@@ -228,8 +228,23 @@ func main() {
 			// Show paper trading
 			if tradingEngine != nil {
 				fmt.Printf("\nPaper Trading Account:\n")
-				fmt.Printf("  Balance: %.2f USDC\n", tradingEngine.GetBalance())
-				fmt.Printf("  Profit: %.2f USDC\n", tradingEngine.GetCumulativeProfit())
+				startingBalance := tradingEngine.GetStartingBalance()
+				currentBalance := tradingEngine.GetBalance()
+				profit := currentBalance - startingBalance
+				profitPercentage := 0.0
+				if startingBalance > 0 {
+					profitPercentage = (profit / startingBalance) * 100
+				}
+				
+				fmt.Printf("  Starting Balance: %.2f USDC\n", startingBalance)
+				fmt.Printf("  Current Balance: %.2f USDC\n", currentBalance)
+				
+				profitStatus := "📈"
+				if profit < 0 {
+					profitStatus = "📉"
+				}
+				fmt.Printf("  %s Profit/Loss: %.2f USDC (%.1f%%)\n", profitStatus, profit, profitPercentage)
+				
 				positions := tradingEngine.GetPositions()
 				if len(positions) == 0 {
 					fmt.Printf("  Positions: None\n")
