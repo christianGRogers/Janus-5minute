@@ -218,9 +218,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			log.Printf("[LateEntry] %s (%s): FINAL SECONDS - checking for extreme confidence...", marketID, outcome)
 			// Only trade at extreme certainty: 0.98+
 			if extremeHighMet && minSizeForBuy {
-				// FINAL VALIDATION: Verify buy price meets minimum T1 threshold before placing order
-				if book.BestAskParsed < les.highConfThreshold {
-					log.Printf("[LateEntry] %s (%s): ✗ BUY CANCELLED - Ask price %.4f below T1 minimum %.4f", marketID, outcome, book.BestAskParsed, les.highConfThreshold)
+				// HARD MINIMUM: Verify actual share price is above $0.85 before placing order
+				if book.BestAskParsed < 0.85 {
+					log.Printf("[LateEntry] %s (%s): ✗ BUY CANCELLED - Share price $%.4f below hard minimum $0.85", marketID, outcome, book.BestAskParsed)
 					continue
 				}
 				
@@ -253,9 +253,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		// HIGH CONFIDENCE BUY (0.85+): Only when outcome price is high confidence
 		// Allowed from 1:30 onward if high conf is met
 		if inFinalMinute && highConfBuyMet && !veryHighConfBuyMet && minSizeForConservativeBuy {
-			// FINAL VALIDATION: Verify buy price meets minimum T1 threshold before placing order
-			if book.BestAskParsed < les.highConfThreshold {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 1 CANCELLED - Ask price %.4f below T1 minimum %.4f", marketID, outcome, book.BestAskParsed, les.highConfThreshold)
+			// HARD MINIMUM: Verify actual share price is above $0.85 before placing order
+			if book.BestAskParsed < 0.85 {
+				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 1 CANCELLED - Share price $%.4f below hard minimum $0.85", marketID, outcome, book.BestAskParsed)
 				continue
 			}
 			
@@ -282,9 +282,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		// VERY HIGH CONFIDENCE BUY (0.95+): Prefer higher confidence entries
 		// Allowed from 1:30 onward if very high conf is met
 		if inFinalMinute && veryHighConfBuyMet && minSizeForStandardBuy {
-			// FINAL VALIDATION: Verify buy price meets minimum T1 threshold before placing order
-			if book.BestAskParsed < les.highConfThreshold {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 2 CANCELLED - Ask price %.4f below T1 minimum %.4f", marketID, outcome, book.BestAskParsed, les.highConfThreshold)
+			// HARD MINIMUM: Verify actual share price is above $0.85 before placing order
+			if book.BestAskParsed < 0.85 {
+				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 2 CANCELLED - Share price $%.4f below hard minimum $0.85", marketID, outcome, book.BestAskParsed)
 				continue
 			}
 			
