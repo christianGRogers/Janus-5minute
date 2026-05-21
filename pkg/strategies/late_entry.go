@@ -218,6 +218,12 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			log.Printf("[LateEntry] %s (%s): FINAL SECONDS - checking for extreme confidence...", marketID, outcome)
 			// Only trade at extreme certainty: 0.98+
 			if extremeHighMet && minSizeForBuy {
+				// FINAL VALIDATION: Verify buy price meets minimum T1 threshold before placing order
+				if book.BestAskParsed < les.highConfThreshold {
+					log.Printf("[LateEntry] %s (%s): ✗ BUY CANCELLED - Ask price %.4f below T1 minimum %.4f", marketID, outcome, book.BestAskParsed, les.highConfThreshold)
+					continue
+				}
+				
 				// High confidence on outcome - BUY it
 				positionSize := math.Min(
 					maxPosSize / book.BestAskParsed,
@@ -247,6 +253,12 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		// HIGH CONFIDENCE BUY (0.85+): Only when outcome price is high confidence
 		// Allowed from 1:30 onward if high conf is met
 		if inFinalMinute && highConfBuyMet && !veryHighConfBuyMet && minSizeForConservativeBuy {
+			// FINAL VALIDATION: Verify buy price meets minimum T1 threshold before placing order
+			if book.BestAskParsed < les.highConfThreshold {
+				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 1 CANCELLED - Ask price %.4f below T1 minimum %.4f", marketID, outcome, book.BestAskParsed, les.highConfThreshold)
+				continue
+			}
+			
 			// 0.85-0.94 range: Conservative position size
 			positionSize := math.Min(
 				(maxPosSize * 0.25) / book.BestAskParsed, // Only 25% of max
@@ -270,6 +282,12 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		// VERY HIGH CONFIDENCE BUY (0.95+): Prefer higher confidence entries
 		// Allowed from 1:30 onward if very high conf is met
 		if inFinalMinute && veryHighConfBuyMet && minSizeForStandardBuy {
+			// FINAL VALIDATION: Verify buy price meets minimum T1 threshold before placing order
+			if book.BestAskParsed < les.highConfThreshold {
+				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 2 CANCELLED - Ask price %.4f below T1 minimum %.4f", marketID, outcome, book.BestAskParsed, les.highConfThreshold)
+				continue
+			}
+			
 			// 0.95+ range: Standard position size (more than conservative)
 			positionSize := math.Min(
 				(maxPosSize * 0.35) / book.BestAskParsed, // 35% of max
