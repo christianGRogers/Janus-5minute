@@ -162,7 +162,7 @@ func (lte *LiveTradingEngine) GetBalance() float64 {
 // and the CLOB API balance-allowance endpoint
 func (lte *LiveTradingEngine) fetchBalanceFromAPI() float64 {
 	// Call Python script to get balance
-	cmd := exec.Command("python", "tools/get_polymarket_balance.py")
+	cmd := exec.Command("python3", "tools/get_polymarket_balance.py")
 	
 	// Set environment variables for the Python script
 	cmd.Env = append(os.Environ(),
@@ -343,7 +343,7 @@ func (lte *LiveTradingEngine) placeOrderViaScript(marketID string, side string, 
 	}
 
 	// Step 2: Place order using token ID
-	cmd := exec.Command("python", "tools/place_order.py",
+	cmd := exec.Command("python3", "tools/place_order.py",
 		"--token-id", tokenID,
 		"--price", fmt.Sprintf("%.4f", price),
 		"--size", fmt.Sprintf("%.2f", size),
