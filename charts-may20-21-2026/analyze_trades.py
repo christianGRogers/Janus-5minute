@@ -33,54 +33,10 @@ print(f"Unique markets: {df['marketName'].nunique()}")
 
 # Calculate account change over time (P&L + Deposits)
 # Track deposits separately to show account inflows
-# Group by market time windows (embedded in market name)
+# P&L = (Redeems - Buys) + Deposits
 
-def extract_market_time(market_name):
-    """Extract time window from market name e.g., 'Bitcoin Up or Down - May 21, 2:30AM-2:35AM ET'"""
-    parts = market_name.split(' - ')
-    if len(parts) > 1:
-        time_part = parts[1].replace(' ET', '').strip('"')
-        return time_part
-    return market_name
-
-# Build timeline by market time window
-account_change_by_market_time = defaultdict(float)
-market_time_order = []  # Keep order of market times
-
-for idx, row in df.iterrows():
-    amount = float(row['usdcAmount'])
-    action = row['action']
-    market = row['marketName']
-    market_time = extract_market_time(market)
-    
-    if market_time not in account_change_by_market_time:
-        market_time_order.append(market_time)
-    
-    if action == "Buy":
-        account_change_by_market_time[market_time] -= amount
-        buy_count += 1
-        total_bought += amount
-    elif action == "Redeem":
-        account_change_by_market_time[market_time] += amount
-        sell_count += 1
-        total_redeemed += amount
-    elif action == "Deposit":
-        account_change_by_market_time[market_time] += amount
-        deposit_count += 1
-        total_deposits += amount
-
-# Build cumulative account changes
-account_changes = []
-market_times_x_axis = []
-cumulative_change = 0
-for market_time in market_time_order:
-    cumulative_change += account_change_by_market_time[market_time]
-    account_changes.append(cumulative_change)
-    market_times_x_axis.append(market_time)
-
-# Also keep original timestamps for reference in other calculations
 account_change = 0
-account_changes_by_transaction = []
+account_changes = []
 timestamps = []
 buy_count = 0
 sell_count = 0
@@ -126,7 +82,7 @@ for idx, row in df.iterrows():
         deposit_count += 1
         total_deposits += amount
     
-    account_changes_by_transaction.append(account_change)
+    account_changes.append(account_change)
     timestamps.append(timestamp)
 
 # Calculate P&L and Total Account Change
@@ -235,68 +191,22 @@ if not market_df.empty:
         trades = f"{int(row['buys'])}/{int(row['redeems'])}"
         print(f"{row['market']:<50} {trades:<10} ${row['pnl']:>9.2f} {row['pnl_pct']:>6.1f}%")
 
-# Track major loss events by market with timestamps
-market_loss_events = []  # List of (timestamp, market_name, loss_amount)
-for market, data in market_windows.items():
-    buys = data["buys"]
-    redeems = data["redeems"]
-    
-    total_buy_amount = sum(b['amount'] for b in buys)
-    total_redeem_amount = sum(r['amount'] for r in redeems)
-    
-    if total_buy_amount > 0 and total_redeem_amount > 0:
-        loss = total_redeem_amount - total_buy_amount
-        if loss < 0:  # Actual loss on this market
-            # Get the earliest buy time for this market
-            earliest_time = min(b['time'] for b in buys)
-            market_loss_events.append({
-                'time': earliest_time,
-                'market': market,
-                'loss': loss,
-                'abs_loss': abs(loss)
-            })
-
-# Sort by absolute loss magnitude and get top 5 major losses
-market_loss_events_sorted = sorted(market_loss_events, key=lambda x: x['abs_loss'], reverse=True)
-major_losses = market_loss_events_sorted[:5]
-
 # Generate visualizations
 fig = plt.figure(figsize=(16, 12))
 gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
 
-# 1. Account Change Over Time (P&L + Deposits) - By Market Time
+# 1. Account Change Over Time (P&L + Deposits)
 ax1 = fig.add_subplot(gs[0, :])
-ax1.plot(range(len(market_times_x_axis)), account_changes, linewidth=2, color='#2E86AB', label='Account Change', marker='o', markersize=4)
-ax1.fill_between(range(len(market_times_x_axis)), 0, account_changes, alpha=0.3, color='#2E86AB')
+ax1.plot(timestamps, account_changes, linewidth=2, color='#2E86AB', label='Account Change')
+ax1.fill_between(timestamps, 0, account_changes, alpha=0.3, color='#2E86AB')
 ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5, linewidth=1)
 ax1.axhline(y=total_deposits, color='green', linestyle='--', alpha=0.5, linewidth=1, label=f'Total Deposits: ${total_deposits:.2f}')
-
-ax1.set_xticks(range(0, len(market_times_x_axis), max(1, len(market_times_x_axis)//10)))
-ax1.set_xticklabels([market_times_x_axis[i] for i in range(0, len(market_times_x_axis), max(1, len(market_times_x_axis)//10))], rotation=45, ha='right', fontsize=8)
 ax1.set_ylabel('Account Change (USDC)', fontsize=12, fontweight='bold')
-ax1.set_title('Account Change Over Time (P&L + Deposits) - By Market Time Window', fontsize=14, fontweight='bold')
+ax1.set_title('Account Change Over Time (P&L + Deposits)', fontsize=14, fontweight='bold')
 ax1.legend(loc='best')
 ax1.grid(True, alpha=0.3)
-
-# Annotate major loss points on the graph
-for loss_event in major_losses:
-    # Find the market time that matches this loss
-    market_time = extract_market_time(loss_event['market'])
-    try:
-        idx = market_times_x_axis.index(market_time)
-        ax1.scatter(idx, account_changes[idx], color='red', s=200, marker='X', zorder=5, edgecolors='darkred', linewidth=2)
-        
-        label_text = f"{market_time}\n${loss_event['loss']:.2f}"
-        ax1.annotate(label_text, 
-                    xy=(idx, account_changes[idx]),
-                    xytext=(0, -50),
-                    textcoords='offset points',
-                    ha='center',
-                    fontsize=8,
-                    bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.7),
-                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', color='red', lw=1.5))
-    except ValueError:
-        pass  # Market time not found
+ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
 # 2. Win Rate Statistics (Pie Chart)
 ax2 = fig.add_subplot(gs[1, 0])
@@ -306,26 +216,21 @@ wedges, texts, autotexts = ax2.pie(win_loss_data, labels=[f'Wins\n({win_count})'
                                      autopct='%1.1f%%', colors=colors_pie, startangle=90, textprops={'fontsize': 11, 'fontweight': 'bold'})
 ax2.set_title(f'Win Rate: {win_rate:.1f}%', fontsize=12, fontweight='bold')
 
-# 3. Account Change Over Time (Dollar Amount) - By Market Time
+# 3. Account Change Percentage Over Time
 ax3 = fig.add_subplot(gs[1, 1])
-ax3.plot(range(len(market_times_x_axis)), account_changes, linewidth=2, color='#A23B72', marker='o', markersize=4)
-ax3.fill_between(range(len(market_times_x_axis)), 0, account_changes, alpha=0.3, color='#A23B72')
+if total_deposits > 0:
+    change_percentages = [(c / total_account_change * 100) if total_account_change != 0 else 0 for c in account_changes]
+else:
+    change_percentages = account_changes
+
+ax3.plot(timestamps, change_percentages, linewidth=2, color='#A23B72', marker='o', markersize=3)
+ax3.fill_between(timestamps, 0, change_percentages, alpha=0.3, color='#A23B72')
 ax3.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-
-# Annotate major loss points on this chart too
-for loss_event in major_losses:
-    market_time = extract_market_time(loss_event['market'])
-    try:
-        idx = market_times_x_axis.index(market_time)
-        ax3.scatter(idx, account_changes[idx], color='red', s=150, marker='X', zorder=5, edgecolors='darkred', linewidth=1.5)
-    except ValueError:
-        pass
-
-ax3.set_xticks(range(0, len(market_times_x_axis), max(1, len(market_times_x_axis)//10)))
-ax3.set_xticklabels([market_times_x_axis[i] for i in range(0, len(market_times_x_axis), max(1, len(market_times_x_axis)//10))], rotation=45, ha='right', fontsize=8)
-ax3.set_ylabel('Account Change ($)', fontsize=11, fontweight='bold')
-ax3.set_title('Cumulative Account Change Over Time (By Market Time)', fontsize=12, fontweight='bold')
+ax3.set_ylabel('Change ($)', fontsize=11, fontweight='bold')
+ax3.set_title('Account Change Over Time', fontsize=12, fontweight='bold')
 ax3.grid(True, alpha=0.3)
+ax3.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
 # 4. Entry Price vs Profit Scatter Plot
 ax4 = fig.add_subplot(gs[2, 0])
@@ -361,14 +266,10 @@ if not market_df.empty:
 plt.suptitle('🤖 Janus Trading Bot - May 20, 2026 Performance Analysis', 
              fontsize=16, fontweight='bold', y=0.995)
 
-# Display the figure in a Python application window
-print("\n📊 Displaying visualization... (close the window to continue)")
-plt.show()
-
-# Save figure after displaying
+# Save figure
 output_file = Path("trading_analysis.png")
 plt.savefig(output_file, dpi=300, bbox_inches='tight')
-print(f"✅ Visualization saved: {output_file}")
+print(f"\n✅ Visualization saved: {output_file}")
 
 # Additional Stats Export
 stats_file = Path("trading_stats.txt")
@@ -401,3 +302,5 @@ with open(stats_file, 'w') as f:
         f.write(f"  P&L: ${row['pnl']:.2f} ({row['pnl_pct']:.1f}%)\n")
 
 print(f"✅ Stats exported: {stats_file}")
+
+plt.show()

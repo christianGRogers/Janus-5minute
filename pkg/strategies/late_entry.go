@@ -43,7 +43,7 @@ func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
 		extremeConfidence:   0.98,        // Aggressive trading in final seconds
 		minHoldPrice:        0.70,        // Sell inventory if price drops below 0.70 (loss minimization)
 	}
-	strategy.Config.RiskTolerance = 0.4
+	strategy.Config.RiskTolerance = 0.2
 	strategy.Config.MaxPositionSize = 0 // Disable fixed max, use dynamic sizing
 	return strategy
 }

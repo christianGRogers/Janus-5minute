@@ -43,6 +43,14 @@ def extract_market_time(market_name):
         return time_part
     return market_name
 
+# Initialize counters
+buy_count = 0
+sell_count = 0
+deposit_count = 0
+total_deposits = 0
+total_bought = 0
+total_redeemed = 0
+
 # Build timeline by market time window
 account_change_by_market_time = defaultdict(float)
 market_time_order = []  # Keep order of market times
@@ -82,18 +90,12 @@ for market_time in market_time_order:
 account_change = 0
 account_changes_by_transaction = []
 timestamps = []
-buy_count = 0
-sell_count = 0
-deposit_count = 0
-total_deposits = 0
 profitable_trades = 0
 losing_trades = 0
-total_bought = 0
-total_redeemed = 0
 entry_price_profit_pairs = []  # Track (entry_price_in_tokens, profit_in_usdc) pairs
 
 # Parse market names to understand timing windows
-market_windows = defaultdict(lambda: {"buys": [], "redeems": []})
+market_windows = defaultdict(lambda: {"buys": [], "redeems": [], "deposits": []})
 
 for idx, row in df.iterrows():
     timestamp = row['datetime']
@@ -125,6 +127,10 @@ for idx, row in df.iterrows():
         account_change += amount  # Deposits increase account change
         deposit_count += 1
         total_deposits += amount
+        market_windows[market]["deposits"].append({
+            'time': timestamp,
+            'amount': amount
+        })
     
     account_changes_by_transaction.append(account_change)
     timestamps.append(timestamp)
@@ -244,9 +250,9 @@ for market, data in market_windows.items():
     total_buy_amount = sum(b['amount'] for b in buys)
     total_redeem_amount = sum(r['amount'] for r in redeems)
     
-    if total_buy_amount > 0 and total_redeem_amount > 0:
+    if total_buy_amount > 0:
         loss = total_redeem_amount - total_buy_amount
-        if loss < 0:  # Actual loss on this market
+        if loss < 0:  # Actual loss on this market (includes liquidations with 0 redeems)
             # Get the earliest buy time for this market
             earliest_time = min(b['time'] for b in buys)
             market_loss_events.append({
@@ -297,6 +303,28 @@ for loss_event in major_losses:
                     arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', color='red', lw=1.5))
     except ValueError:
         pass  # Market time not found
+
+# Annotate deposit points on the graph
+for market, data in market_windows.items():
+    deposits = data["deposits"]
+    if deposits:
+        market_time = extract_market_time(market)
+        try:
+            idx = market_times_x_axis.index(market_time)
+            total_deposit_amount = sum(d['amount'] for d in deposits)
+            ax1.scatter(idx, account_changes[idx], color='green', s=150, marker='^', zorder=5, edgecolors='darkgreen', linewidth=2)
+            
+            label_text = f"Deposit\n${total_deposit_amount:.2f}"
+            ax1.annotate(label_text, 
+                        xy=(idx, account_changes[idx]),
+                        xytext=(0, 30),
+                        textcoords='offset points',
+                        ha='center',
+                        fontsize=8,
+                        bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgreen', alpha=0.7),
+                        arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', color='green', lw=1.5))
+        except ValueError:
+            pass  # Market time not found
 
 # 2. Win Rate Statistics (Pie Chart)
 ax2 = fig.add_subplot(gs[1, 0])
