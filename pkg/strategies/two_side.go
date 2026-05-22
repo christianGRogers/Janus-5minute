@@ -46,10 +46,10 @@ func NewTwoSideStrategy(engine trading.TradingEngine) *TwoSideStrategy {
 		currentWindow:        time.Now().Unix() / 300,
 		boughtThisWindow:     make(map[string]bool),
 		exitThisWindow:       make(map[string]bool),
-		entryPhaseThreshold:  5 * time.Second,       // Buy in first 5 seconds
+		entryPhaseThreshold:  15 * time.Second,      // Buy in first 15 seconds (extended window due to discovery delay)
 		exitPhaseThreshold:   240 * time.Second,     // Exit when < 60 seconds remain (300 - 60 = 240)
 		targetEntryPrice:     0.50,                  // Target $0.50 per share
-		entryPriceTolerance:  0.10,                  // Allow 0.40-0.60 range
+		entryPriceTolerance:  0.15,                  // Allow 0.35-0.65 range (wider tolerance for market volatility)
 		losingOutcomeMaxPrice: 0.30,                 // Losing side when price drops to this level
 		sharesPerOutcome:     1.0,                   // 1 share per outcome (costs ~$0.50 each)
 		minCashPerMarket:     1.0,                   // Minimum ~$1 per market
@@ -79,7 +79,9 @@ func (ts *TwoSideStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook)
 
 	// Calculate time remaining in the 5-minute window
 	timeInWindow := now.Sub(windowStartTime)
-	timeRemaining := (300 * time.Second) - timeInWindow
+	secondsIntoWindow := int(timeInWindow.Seconds())
+	secondsRemaining := 300 - secondsIntoWindow // 5 minutes = 300 seconds
+	timeRemaining := time.Duration(secondsRemaining) * time.Second
 
 	// Detect new window and reset state
 	if ts.currentWindow != currentWindowNumber {
@@ -92,185 +94,193 @@ func (ts *TwoSideStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook)
 	inExitPhase := timeRemaining <= (60 * time.Second)              // Last 60 seconds
 	inHoldPhase := !inEntryPhase && !inExitPhase                    // Middle period - just hold
 
-	log.Printf("[TwoSide] Time in window: %.1fs, Remaining: %.1fs - Entry: %v, Hold: %v, Exit: %v",
-		timeInWindow.Seconds(), timeRemaining.Seconds(), inEntryPhase, inHoldPhase, inExitPhase)
+	log.Printf("[TwoSide] EVALUATE - Window: %ds into 300s (%d seconds remaining) - Entry: %v, Hold: %v, Exit: %v",
+		secondsIntoWindow, secondsRemaining, inEntryPhase, inHoldPhase, inExitPhase)
 
 	// Iterate through each market in the book
-	for marketID, book := range markets {
+	// Markets come with keys like "btc-updown-5m-1779480300-UP" or "btc-updown-5m-1779480300-DOWN"
+	for cacheKey, book := range markets {
 		if book == nil {
 			continue
 		}
 
+		// Extract outcome from cache key (same pattern as late_entry)
+		var outcome string
+		var baseMarketID string
+
+		if len(cacheKey) >= 3 && cacheKey[len(cacheKey)-2:] == "UP" {
+			outcome = "UP"
+			baseMarketID = cacheKey[:len(cacheKey)-3]
+		} else if len(cacheKey) >= 4 && cacheKey[len(cacheKey)-4:] == "DOWN" {
+			outcome = "DOWN"
+			baseMarketID = cacheKey[:len(cacheKey)-5]
+		} else {
+			continue
+		}
+
 		// PHASE 1: ENTRY - Buy 1 share of each outcome near $0.50 in first 5 seconds
-		if inEntryPhase && !ts.boughtThisWindow[marketID] {
-			log.Printf("[TwoSide] %s: ENTRY PHASE - Evaluating for two-sided entry", marketID)
+		if inEntryPhase && !ts.boughtThisWindow[baseMarketID] {
+			log.Printf("[TwoSide] %s (%s): ENTRY PHASE - Evaluating for two-sided entry", baseMarketID, outcome)
 
 			// Initialize inventory for this market if not already done
-			if ts.ownedInventory[marketID] == nil {
-				ts.ownedInventory[marketID] = make(map[string]float64)
+			if ts.ownedInventory[baseMarketID] == nil {
+				ts.ownedInventory[baseMarketID] = make(map[string]float64)
 			}
 
-			// For binary markets, we need to identify the two outcomes
-			// In Polymarket, we typically look at the best bid/ask to infer outcomes
-			// Outcome 1: Higher priced (typically YES), Outcome 2: Lower priced (typically NO)
-			upPrice := book.BestAskParsed
-			downPrice := 1.0 - upPrice // For binary market, outcomes are complementary
+			// For binary markets, the complementary outcome price = 1.0 - this outcome's price
+			thisOutcomePrice := book.BestAskParsed
+			complementOutcomePrice := 1.0 - thisOutcomePrice
 
-			// Check if prices are near $0.50 (within tolerance)
-			upNear50 := math.Abs(upPrice-ts.targetEntryPrice) <= ts.entryPriceTolerance
-			downNear50 := math.Abs(downPrice-ts.targetEntryPrice) <= ts.entryPriceTolerance
+			// Determine if both outcomes are near $0.50
+			thisNear50 := math.Abs(thisOutcomePrice-ts.targetEntryPrice) <= ts.entryPriceTolerance
+			complementNear50 := math.Abs(complementOutcomePrice-ts.targetEntryPrice) <= ts.entryPriceTolerance
 
-			if !upNear50 || !downNear50 {
-				log.Printf("[TwoSide] %s: ✗ ENTRY SKIPPED - Prices not near $0.50 (UP: $%.4f, DOWN: $%.4f)", 
-					marketID, upPrice, downPrice)
+			if !thisNear50 || !complementNear50 {
+				log.Printf("[TwoSide] %s (%s): ✗ ENTRY SKIPPED - Prices not near $0.50 (%s: $%.4f, other: $%.4f)", 
+					baseMarketID, outcome, outcome, thisOutcomePrice, complementOutcomePrice)
 				continue
 			}
+
+			// Calculate minimum shares to meet $1 order minimum
+			// If price is $0.39, we need at least $1 / $0.39 = 2.56 shares (round up to 3)
+			minSharesForMinOrder := math.Ceil(ts.minCashPerMarket / thisOutcomePrice)
+			sharesToBuy := math.Max(ts.sharesPerOutcome, minSharesForMinOrder)
 
 			// Check available liquidity on both sides
-			hasLiquidityUp := book.BestAskSizeParsed >= ts.sharesPerOutcome
-			hasLiquidityDown := book.BestBidSizeParsed >= ts.sharesPerOutcome
+			hasLiquidityThis := book.BestAskSizeParsed >= sharesToBuy
+			hasLiquidityComplement := book.BestBidSizeParsed >= sharesToBuy
 
-			if !hasLiquidityUp || !hasLiquidityDown {
-				log.Printf("[TwoSide] %s: ✗ ENTRY SKIPPED - Insufficient liquidity (UP liquidity: %.0f, DOWN liquidity: %.0f)", 
-					marketID, book.BestAskSizeParsed, book.BestBidSizeParsed)
+			if !hasLiquidityThis || !hasLiquidityComplement {
+				log.Printf("[TwoSide] %s (%s): ✗ ENTRY SKIPPED - Insufficient liquidity (%s ask: %.0f, bid: %.0f, need: %.0f)", 
+					baseMarketID, outcome, outcome, book.BestAskSizeParsed, book.BestBidSizeParsed, sharesToBuy)
 				continue
 			}
 
-			// First, BUY the UP side (higher priced outcome)
-			// This is the first signal, so return immediately
-			ts.boughtThisWindow[marketID] = true // Mark that we've initiated trading for this market
+			// First, BUY this outcome
+			ts.boughtThisWindow[baseMarketID] = true // Mark that we've initiated trading for this market
 			ts.lastTradeTime = now
-			ts.ownedInventory[marketID]["UP"] = ts.sharesPerOutcome
-			ts.marketExposure[marketID] += ts.sharesPerOutcome * upPrice
+			ts.ownedInventory[baseMarketID][outcome] = sharesToBuy
+			ts.marketExposure[baseMarketID] += sharesToBuy * thisOutcomePrice
 
-			log.Printf("[TwoSide] %s: ✓ SIGNAL - BUY UP (outcome 1), %.1f shares at $%.4f (cost: $%.2f)", 
-				marketID, ts.sharesPerOutcome, upPrice, ts.sharesPerOutcome*upPrice)
+			log.Printf("[TwoSide] %s (%s): ✓ SIGNAL - BUY %s (first leg), %.1f shares at $%.4f (cost: $%.2f, min order: $%.2f)", 
+				baseMarketID, outcome, outcome, sharesToBuy, thisOutcomePrice, sharesToBuy*thisOutcomePrice, ts.minCashPerMarket)
 
 			return &TradeSignal{
 				ShouldTrade:        true,
-				MarketID:           marketID,
+				MarketID:           baseMarketID, // Return base market ID, outcome is specified separately
 				Side:               "BUY",
-				Price:              upPrice,
+				Price:              thisOutcomePrice,
 				Size:               ts.sharesPerOutcome,
 				AvailableLiquidity: book.BestAskSizeParsed,
-				Outcome:            "UP",
+				Outcome:            outcome,
 			}
 		}
 
-		// After the first BUY signal, we need to detect the second buy (DOWN side)
-		// This happens on the next evaluation call in the entry phase
-		if inEntryPhase && ts.boughtThisWindow[marketID] && ts.ownedInventory[marketID]["DOWN"] == 0 {
-			log.Printf("[TwoSide] %s: ENTRY PHASE - Second leg (DOWN) not yet purchased, buying now", marketID)
+		// After the first BUY signal, we need to detect the second buy (complementary outcome)
+		// This happens when we see the complementary outcome key in the next evaluation call
+		complementOutcome := "DOWN"
+		if outcome == "DOWN" {
+			complementOutcome = "UP"
+		}
 
-			if ts.ownedInventory[marketID] == nil {
-				ts.ownedInventory[marketID] = make(map[string]float64)
+		if inEntryPhase && ts.boughtThisWindow[baseMarketID] && outcome == complementOutcome && ts.ownedInventory[baseMarketID][complementOutcome] == 0 {
+			log.Printf("[TwoSide] %s (%s): ENTRY PHASE - Second leg (%s) not yet purchased, buying now", baseMarketID, outcome, outcome)
+
+			if ts.ownedInventory[baseMarketID] == nil {
+				ts.ownedInventory[baseMarketID] = make(map[string]float64)
 			}
 
-			upPrice := book.BestAskParsed
-			downPrice := 1.0 - upPrice
+			thisOutcomePrice := book.BestAskParsed
 
-			// Check liquidity for DOWN side
-			hasLiquidityDown := book.BestBidSizeParsed >= ts.sharesPerOutcome
-			if !hasLiquidityDown {
-				log.Printf("[TwoSide] %s: ✗ DOWN BUY SKIPPED - Insufficient liquidity (%.0f shares available)", 
-					marketID, book.BestBidSizeParsed)
+			// Check liquidity for this outcome
+			hasLiquidityThis := book.BestAskSizeParsed >= ts.sharesPerOutcome
+			if !hasLiquidityThis {
+				log.Printf("[TwoSide] %s (%s): ✗ BUY SKIPPED - Insufficient liquidity (%.0f shares available)", 
+					baseMarketID, outcome, book.BestAskSizeParsed)
 				continue
 			}
 
-			// BUY the DOWN side
-			ts.ownedInventory[marketID]["DOWN"] = ts.sharesPerOutcome
-			ts.marketExposure[marketID] += ts.sharesPerOutcome * downPrice
+			// BUY the complementary outcome
+			ts.ownedInventory[baseMarketID][outcome] = ts.sharesPerOutcome
+			ts.marketExposure[baseMarketID] += ts.sharesPerOutcome * thisOutcomePrice
 			ts.lastTradeTime = now
 
-			log.Printf("[TwoSide] %s: ✓ SIGNAL - BUY DOWN (outcome 2), %.1f shares at $%.4f (cost: $%.2f, total invested: $%.2f)", 
-				marketID, ts.sharesPerOutcome, downPrice, ts.sharesPerOutcome*downPrice, ts.marketExposure[marketID])
+			log.Printf("[TwoSide] %s (%s): ✓ SIGNAL - BUY %s (second leg), %.1f shares at $%.4f (cost: $%.2f, total invested: $%.2f)", 
+				baseMarketID, outcome, outcome, ts.sharesPerOutcome, thisOutcomePrice, ts.sharesPerOutcome*thisOutcomePrice, ts.marketExposure[baseMarketID])
 
 			return &TradeSignal{
 				ShouldTrade:        true,
-				MarketID:           marketID,
+				MarketID:           baseMarketID, // Return base market ID, outcome is specified separately
 				Side:               "BUY",
-				Price:              downPrice,
+				Price:              thisOutcomePrice,
 				Size:               ts.sharesPerOutcome,
-				AvailableLiquidity: book.BestBidSizeParsed,
-				Outcome:            "DOWN",
+				AvailableLiquidity: book.BestAskSizeParsed,
+				Outcome:            outcome,
 			}
 		}
 
 		// PHASE 3: EXIT - Sell the weaker side in final 60 seconds when it drops to 0.25-0.30
-		if inExitPhase && !ts.exitThisWindow[marketID] && ts.boughtThisWindow[marketID] {
-			log.Printf("[TwoSide] %s: EXIT PHASE - Evaluating for exit (timeRemaining: %.1fs)", marketID, timeRemaining.Seconds())
+		if inExitPhase && !ts.exitThisWindow[baseMarketID] && ts.boughtThisWindow[baseMarketID] {
+			log.Printf("[TwoSide] %s (%s): EXIT PHASE - Evaluating for exit (timeRemaining: %ds)", baseMarketID, outcome, secondsRemaining)
 
-			if ts.ownedInventory[marketID] == nil {
+			if ts.ownedInventory[baseMarketID] == nil {
 				continue
 			}
 
-			upShares := ts.ownedInventory[marketID]["UP"]
-			downShares := ts.ownedInventory[marketID]["DOWN"]
+			sharesThisOutcome := ts.ownedInventory[baseMarketID][outcome]
+			sharesComplementOutcome := ts.ownedInventory[baseMarketID][complementOutcome]
 
 			// Only exit if we own both sides
-			if upShares == 0 || downShares == 0 {
-				log.Printf("[TwoSide] %s: ✗ EXIT SKIPPED - Don't own both sides (UP: %.1f, DOWN: %.1f)", 
-					marketID, upShares, downShares)
+			if sharesThisOutcome == 0 || sharesComplementOutcome == 0 {
+				log.Printf("[TwoSide] %s (%s): ✗ EXIT SKIPPED - Don't own both sides (%s: %.1f, %s: %.1f)", 
+					baseMarketID, outcome, outcome, sharesThisOutcome, complementOutcome, sharesComplementOutcome)
 				continue
 			}
 
-			upPrice := book.BestAskParsed
-			downPrice := 1.0 - upPrice
+			thisOutcomePrice := book.BestAskParsed
+			complementOutcomePrice := 1.0 - thisOutcomePrice
 
-			log.Printf("[TwoSide] %s: Prices - UP: $%.4f, DOWN: $%.4f", marketID, upPrice, downPrice)
+			log.Printf("[TwoSide] %s: Prices - %s: $%.4f, %s: $%.4f", baseMarketID, outcome, thisOutcomePrice, complementOutcome, complementOutcomePrice)
 
 			// Determine which side is losing
 			// Losing side is when price drops significantly (to around 0.25-0.30)
-			upIsLosing := upPrice <= ts.losingOutcomeMaxPrice
-			downIsLosing := downPrice <= ts.losingOutcomeMaxPrice
+			thisIsLosing := thisOutcomePrice <= ts.losingOutcomeMaxPrice
+			complementIsLosing := complementOutcomePrice <= ts.losingOutcomeMaxPrice
 
-			if upIsLosing && downShares > 0 {
-				// DOWN is winning, SELL UP
-				ts.exitThisWindow[marketID] = true
-				ts.ownedInventory[marketID]["UP"] = 0
+			if thisIsLosing && sharesComplementOutcome > 0 {
+				// This outcome is losing, SELL it
+				ts.exitThisWindow[baseMarketID] = true
+				ts.ownedInventory[baseMarketID][outcome] = 0
 				ts.lastTradeTime = now
 
-				log.Printf("[TwoSide] %s: ✓ SIGNAL - SELL UP (losing side at $%.4f), %.1f shares (buy price was ~$0.50)", 
-					marketID, upPrice, upShares)
+				log.Printf("[TwoSide] %s (%s): ✓ SIGNAL - SELL %s (losing side at $%.4f), %.1f shares (buy price was ~$0.50)", 
+					baseMarketID, outcome, outcome, thisOutcomePrice, sharesThisOutcome)
 
 				return &TradeSignal{
 					ShouldTrade:        true,
-					MarketID:           marketID,
+					MarketID:           baseMarketID, // Return base market ID, outcome is specified separately
 					Side:               "SELL",
-					Price:              upPrice,
-					Size:               upShares,
+					Price:              thisOutcomePrice,
+					Size:               sharesThisOutcome,
 					AvailableLiquidity: book.BestBidSizeParsed,
-					Outcome:            "UP",
+					Outcome:            outcome,
 				}
 
-			} else if downIsLosing && upShares > 0 {
-				// UP is winning, SELL DOWN
-				ts.exitThisWindow[marketID] = true
-				ts.ownedInventory[marketID]["DOWN"] = 0
-				ts.lastTradeTime = now
-
-				log.Printf("[TwoSide] %s: ✓ SIGNAL - SELL DOWN (losing side at $%.4f), %.1f shares (buy price was ~$0.50)", 
-					marketID, downPrice, downShares)
-
-				return &TradeSignal{
-					ShouldTrade:        true,
-					MarketID:           marketID,
-					Side:               "SELL",
-					Price:              downPrice,
-					Size:               downShares,
-					AvailableLiquidity: book.BestBidSizeParsed,
-					Outcome:            "DOWN",
-				}
+			} else if complementIsLosing && sharesThisOutcome > 0 {
+				// Complement outcome is losing, but we can't sell it from this market key
+				// We'll let the next iteration handle it when we see the complementary outcome key
+				log.Printf("[TwoSide] %s (%s): Complement outcome is losing, waiting for %s key to sell it", 
+					baseMarketID, outcome, complementOutcome)
 
 			} else {
-				log.Printf("[TwoSide] %s: ✗ EXIT NOT TRIGGERED - Prices haven't diverged enough (UP: $%.4f, DOWN: $%.4f, threshold: $%.2f)", 
-					marketID, upPrice, downPrice, ts.losingOutcomeMaxPrice)
+				log.Printf("[TwoSide] %s (%s): ✗ EXIT NOT TRIGGERED - Prices haven't diverged enough (%s: $%.4f, %s: $%.4f, threshold: $%.2f)", 
+					baseMarketID, outcome, outcome, thisOutcomePrice, complementOutcome, complementOutcomePrice, ts.losingOutcomeMaxPrice)
 			}
 		}
 
 		// PHASE 2: HOLD - Do nothing, just hold positions
 		if inHoldPhase {
-			log.Printf("[TwoSide] %s: HOLD PHASE - Maintaining positions", marketID)
+			log.Printf("[TwoSide] %s (%s): HOLD PHASE - Maintaining positions", baseMarketID, outcome)
 		}
 	}
 

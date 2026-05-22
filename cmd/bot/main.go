@@ -77,7 +77,7 @@ func main() {
 	var strategy strategies.Strategy
 	strategyName := os.Getenv("STRATEGY")
 	if strategyName == "" {
-		strategyName = "TwoSide" // Default strategy
+		strategyName = "LateEntry" // Default strategy
 	}
 
 	switch strategyName {
