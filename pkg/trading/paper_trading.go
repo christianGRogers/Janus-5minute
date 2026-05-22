@@ -400,6 +400,13 @@ func (p *PaperTradingEngine) GetBalance() float64 {
 	return p.startingBalance + p.cumulativeProfit
 }
 
+// GetStartingBalance returns the initial account balance
+func (p *PaperTradingEngine) GetStartingBalance() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.startingBalance
+}
+
 // GetEquity returns total account equity (balance + positions value at current price)
 func (p *PaperTradingEngine) GetEquity(currentPrices map[string]float64) float64 {
 	p.mu.RLock()

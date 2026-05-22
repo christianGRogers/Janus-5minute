@@ -28,18 +28,20 @@ func min(a, b int) int {
 
 // LiveTradingEngine executes real trades on Polymarket
 type LiveTradingEngine struct {
-	mu             sync.RWMutex
-	client         *polymarket.Client
-	apiKey         string
-	apiSecret      string
-	apiKeyOwnerID  string // UUID of the API key owner (required for order placement)
-	passphrase     string
-	privateKey     string
-	address        string
-	positions      map[string]*PaperPosition // Track current positions
-	tradeHistory   []*PaperTrade             // Track trade history for analytics
-	orderIDCounter int64
-	dryRun         bool                      // If true, send orders to API with verbose logging for review
+	mu               sync.RWMutex
+	client           *polymarket.Client
+	apiKey           string
+	apiSecret        string
+	apiKeyOwnerID    string // UUID of the API key owner (required for order placement)
+	passphrase       string
+	privateKey       string
+	address          string
+	positions        map[string]*PaperPosition // Track current positions
+	tradeHistory     []*PaperTrade             // Track trade history for analytics
+	orderIDCounter   int64
+	dryRun           bool                      // If true, send orders to API with verbose logging for review
+	startingBalance  float64                   // Cached starting balance at initialization
+	cumulativeProfit float64                   // Track realized profit from closed positions
 }
 
 // SendOrderRequest is the request payload for POST /order
@@ -124,7 +126,7 @@ func NewLiveTradingEngineWithOwner(client *polymarket.Client, apiKey, apiKeyOwne
 		log.Println("⚠️  DRY_RUN mode enabled - orders will be simulated locally")
 	}
 	
-	return &LiveTradingEngine{
+	engine := &LiveTradingEngine{
 		client:         client,
 		apiKey:         apiKey,
 		apiSecret:      apiSecret,
@@ -137,6 +139,11 @@ func NewLiveTradingEngineWithOwner(client *polymarket.Client, apiKey, apiKeyOwne
 		orderIDCounter: 1000,
 		dryRun:         dryRun,
 	}
+	
+	// Cache starting balance from API on initialization
+	engine.startingBalance = engine.fetchBalanceFromAPI()
+	
+	return engine
 }
 
 // GetBalance fetches the real balance from the Polymarket API
@@ -622,21 +629,125 @@ func (lte *LiveTradingEngine) GetTradeHistory() []*PaperTrade {
 
 // CloseMarketPositions closes all positions for a market at exit price
 func (lte *LiveTradingEngine) CloseMarketPositions(marketID string, exitPrice float64) []*ClosedPosition {
-	// In live trading, positions are closed by placing opposite orders via PlaceOrder
-	// This is a placeholder for analytics purposes
-	return []*ClosedPosition{}
+	lte.mu.Lock()
+	defer lte.mu.Unlock()
+
+	var closedPositions []*ClosedPosition
+	keysToDelete := []string{}
+
+	// Iterate through all positions and find those for this market
+	for posKey, pos := range lte.positions {
+		if strings.HasPrefix(posKey, marketID) {
+			// Create ClosedPosition from PaperPosition
+			entryFee := 0.0
+			exitFee := lte.calculateExitFee(marketID, pos.Direction, exitPrice, pos.Size)
+			grossProfit := (exitPrice - pos.AvgPrice) * pos.Size
+			if pos.Side == "SELL" {
+				grossProfit = (pos.AvgPrice - exitPrice) * pos.Size
+			}
+			netProfit := grossProfit - entryFee - exitFee
+
+			closedPos := &ClosedPosition{
+				MarketID:      pos.MarketID,
+				Outcome:       pos.Direction,
+				EntryPrice:    pos.AvgPrice,
+				ExitPrice:     exitPrice,
+				Size:          pos.Size,
+				EntryFee:      entryFee,
+				ExitFee:       exitFee,
+				ProfitLoss:    grossProfit,
+				NetProfitLoss: netProfit,
+				ProfitPct:     (netProfit / (pos.AvgPrice * pos.Size)) * 100,
+				EntryTime:     pos.EntryTime,
+				ExitTime:      time.Now().Unix(),
+			}
+			closedPositions = append(closedPositions, closedPos)
+			
+			// Add to cumulative profit
+			lte.cumulativeProfit += netProfit
+			
+			keysToDelete = append(keysToDelete, posKey)
+		}
+	}
+
+	// Remove closed positions from tracking
+	for _, key := range keysToDelete {
+		delete(lte.positions, key)
+	}
+
+	return closedPositions
 }
 
 // CloseMarketPositionsByOutcome closes positions for a specific outcome at exit price
 func (lte *LiveTradingEngine) CloseMarketPositionsByOutcome(marketID string, outcome string, exitPrice float64) []*ClosedPosition {
-	// In live trading, positions are closed by placing opposite orders via PlaceOrder
-	// This is a placeholder for analytics purposes
-	return []*ClosedPosition{}
+	lte.mu.Lock()
+	defer lte.mu.Unlock()
+
+	var closedPositions []*ClosedPosition
+	keysToDelete := []string{}
+
+	// Iterate through all positions and find those matching market and outcome
+	for posKey, pos := range lte.positions {
+		if strings.HasPrefix(posKey, marketID) && pos.Direction == outcome {
+			// Create ClosedPosition from PaperPosition
+			// Estimate entry fee (0% fee for simplicity since we don't track it separately)
+			entryFee := 0.0
+			exitFee := lte.calculateExitFee(marketID, outcome, exitPrice, pos.Size)
+			grossProfit := (exitPrice - pos.AvgPrice) * pos.Size
+			if pos.Side == "SELL" {
+				grossProfit = (pos.AvgPrice - exitPrice) * pos.Size
+			}
+			netProfit := grossProfit - entryFee - exitFee
+
+			closedPos := &ClosedPosition{
+				MarketID:      pos.MarketID,
+				Outcome:       pos.Direction,
+				EntryPrice:    pos.AvgPrice,
+				ExitPrice:     exitPrice,
+				Size:          pos.Size,
+				EntryFee:      entryFee,
+				ExitFee:       exitFee,
+				ProfitLoss:    grossProfit,
+				NetProfitLoss: netProfit,
+				ProfitPct:     (netProfit / (pos.AvgPrice * pos.Size)) * 100,
+				EntryTime:     pos.EntryTime,
+				ExitTime:      time.Now().Unix(),
+			}
+			closedPositions = append(closedPositions, closedPos)
+			
+			// Add to cumulative profit
+			lte.cumulativeProfit += netProfit
+			
+			keysToDelete = append(keysToDelete, posKey)
+		}
+	}
+
+	// Remove closed positions from tracking
+	for _, key := range keysToDelete {
+		delete(lte.positions, key)
+	}
+
+	return closedPositions
 }
 
-// GetCumulativeProfit returns 0 in live trading (use balance instead)
+// calculateExitFee calculates the taker fee for an exit order using Polymarket formula
+// fee = C × 0.072020 × p × (1 - p)
+// where C is the size and p is the price
+func (lte *LiveTradingEngine) calculateExitFee(marketID string, outcome string, exitPrice float64, size float64) float64 {
+	return size * 0.072020 * exitPrice * (1 - exitPrice)
+}
+
+// GetCumulativeProfit returns cumulative profit from closed positions
 func (lte *LiveTradingEngine) GetCumulativeProfit() float64 {
-	// In live trading, profit is reflected in the balance
-	// No need to track separately
-	return 0
+	lte.mu.RLock()
+	defer lte.mu.RUnlock()
+	return lte.cumulativeProfit
+}
+
+// GetStartingBalance returns 0 in live trading (not tracked)
+func (lte *LiveTradingEngine) GetStartingBalance() float64 {
+	lte.mu.RLock()
+	defer lte.mu.RUnlock()
+	// Return the cached starting balance from API initialization
+	return lte.startingBalance
 }

@@ -16,6 +16,9 @@ type TradingEngine interface {
 	// For live trading: fetched from API
 	GetBalance() float64
 
+	// GetStartingBalance returns the initial account balance
+	GetStartingBalance() float64
+
 	// GetPositions returns all currently open positions
 	GetPositions() map[string]*PaperPosition
 

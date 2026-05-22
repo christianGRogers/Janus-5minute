@@ -1,0 +1,41 @@
+JANUS TRADING BOT - PERFORMANCE SUMMARY
+============================================================
+
+Analysis Date: May 20-21, 2026
+Time Range: 2026-05-21 00:26:14 to 2026-05-22 18:40:49
+
+ACCOUNT CHANGE SUMMARY
+------------------------------------------------------------
+Total Deposits: $55.20
+Trading P&L: $0.4867
+Total Account Change: $-10.6189
+
+TRADE STATISTICS
+------------------------------------------------------------
+Total Buy Orders: 1364
+Total Redeems: 634
+Total Deposits: 2
+Total USDC Deployed: $4589.68
+Total USDC Recovered: $4523.86
+Win Rate: 0%
+Closed Trades: 682
+Wins: 642 | Losses: 40
+Trade Win Rate: 94.1%
+
+TOP PERFORMING MARKETS
+------------------------------------------------------------
+Bitcoin Up or Down - May 21, 2:30AM-2:35AM ET
+  Buys/Redeems: 6/1
+  P&L: $7.73 (25.1%)
+Bitcoin Up or Down - May 21, 1:25AM-1:30AM ET
+  Buys/Redeems: 5/1
+  P&L: $2.77 (10.9%)
+Bitcoin Up or Down - May 21, 2:00AM-2:05AM ET
+  Buys/Redeems: 8/1
+  P&L: $2.69 (5.2%)
+Bitcoin Up or Down - May 21, 2:10AM-2:15AM ET
+  Buys/Redeems: 6/1
+  P&L: $2.23 (6.2%)
+Bitcoin Up or Down - May 21, 8:45PM-8:50PM ET
+  Buys/Redeems: 4/1
+  P&L: $2.13 (17.1%)
