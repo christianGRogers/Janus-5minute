@@ -75,7 +75,19 @@ func main() {
 
 	// Create and initialize strategy
 	var strategy strategies.Strategy
-	strategy = strategies.NewLateEntryStrategy(tradingEngine)
+	strategyName := os.Getenv("STRATEGY")
+	if strategyName == "" {
+		strategyName = "TwoSide" // Default strategy
+	}
+
+	switch strategyName {
+	case "TwoSide":
+		strategy = strategies.NewTwoSideStrategy(tradingEngine)
+	case "LateEntry":
+		fallthrough
+	default:
+		strategy = strategies.NewLateEntryStrategy(tradingEngine)
+	}
 	log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
 
 	// Create market logger for analytics
