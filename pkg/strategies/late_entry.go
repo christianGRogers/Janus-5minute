@@ -88,7 +88,7 @@ func (les *LateEntryStrategy) calculateSafePositionSize(marketID string, percent
 
 // EvaluateV2 analyzes market data and returns complete trading signal
 // BUY HIGH + LOSS EXIT STRATEGY:
-// 1. Wait until less than 1 minute (60 seconds) remains in the window
+// 1. Wait until less than 1 minute (30 seconds) remains in the window
 // 2. NO buys below 0.75 - skip the medium confidence zone entirely
 // 3. PREFER high confidence (0.85+) - these consistently win
 // 4. TIER 1 (0.75-0.84): Conservative buys with small position sizes
@@ -121,7 +121,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 	log.Printf("[LateEntry] EVALUATE - Window: %ds into 300s (%d seconds remaining)", secondsIntoWindow, secondsRemaining)
 
 	// Only trade in the final minute (< 60 seconds remaining)
-	if secondsRemaining >= 60 {
+	if secondsRemaining >= 30 {
 		log.Printf("[LateEntry]   → Too early to trade (need < 60 seconds remaining)")
 		return &TradeSignal{ShouldTrade: false}
 	}
@@ -130,7 +130,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 	allowTrading := secondsRemaining < 90
 	
 	if !allowTrading {
-		log.Printf("[LateEntry]   → Too early to trade (need < 90 seconds remaining for high conf, or < 60 for standard)")
+		log.Printf("[LateEntry]   → Too early to trade (need < 90 seconds remaining for high conf, or < 30 for standard)")
 		return &TradeSignal{ShouldTrade: false}
 	}
 	
@@ -201,7 +201,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		log.Printf("[LateEntry] %s: Evaluating - Price: %.4f, Spread: %.2f%%, Liquidity: %.0f", marketID, midPrice, spreadPercent, book.LiquidityParsed)
 
 		inFinalSeconds := secondsRemaining < 10
-		inFinalMinute := secondsRemaining < 60
+		inFinalMinute := secondsRemaining < 30
 		
 		// Get dynamic position size based on current balance and risk tolerance
 		maxPosSize := les.GetDynamicPositionSize()
