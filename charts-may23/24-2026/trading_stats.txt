@@ -2,40 +2,40 @@ JANUS TRADING BOT - PERFORMANCE SUMMARY
 ============================================================
 
 Analysis Date: May 20-21, 2026
-Time Range: 2026-05-21 01:40:37 to 2026-05-23 00:35:31
+Time Range: 2026-05-21 18:15:42 to 2026-05-25 01:34:44
 
 ACCOUNT CHANGE SUMMARY
 ------------------------------------------------------------
-Total Deposits: $55.20
-Trading P&L: $0.4867
-Total Account Change: $-10.2129
+Total Deposits: $0.00
+Trading P&L: $-0.5551
+Total Account Change: $-10.2874
 
 TRADE STATISTICS
 ------------------------------------------------------------
-Total Buy Orders: 1360
-Total Redeems: 638
-Total Deposits: 2
-Total USDC Deployed: $4550.79
-Total USDC Recovered: $4485.38
+Total Buy Orders: 1256
+Total Redeems: 744
+Total Deposits: 0
+Total USDC Deployed: $2442.59
+Total USDC Recovered: $2432.30
 Win Rate: 0%
-Closed Trades: 680
-Wins: 640 | Losses: 40
-Trade Win Rate: 94.1%
+Closed Trades: 628
+Wins: 593 | Losses: 35
+Trade Win Rate: 94.4%
 
 TOP PERFORMING MARKETS
 ------------------------------------------------------------
-Bitcoin Up or Down - May 21, 2:30AM-2:35AM ET
-  Buys/Redeems: 6/1
-  P&L: $7.73 (25.1%)
-Bitcoin Up or Down - May 21, 1:25AM-1:30AM ET
-  Buys/Redeems: 5/1
-  P&L: $2.77 (10.9%)
-Bitcoin Up or Down - May 21, 2:00AM-2:05AM ET
-  Buys/Redeems: 8/1
-  P&L: $2.69 (5.2%)
-Bitcoin Up or Down - May 21, 2:10AM-2:15AM ET
-  Buys/Redeems: 6/1
-  P&L: $2.23 (6.2%)
 Bitcoin Up or Down - May 21, 8:45PM-8:50PM ET
   Buys/Redeems: 4/1
   P&L: $2.13 (17.1%)
+Bitcoin Up or Down - May 21, 7:20PM-7:25PM ET
+  Buys/Redeems: 4/1
+  P&L: $1.57 (8.8%)
+Bitcoin Up or Down - May 21, 6:05PM-6:10PM ET
+  Buys/Redeems: 1/1
+  P&L: $1.24 (70.3%)
+Bitcoin Up or Down - May 21, 6:45PM-6:50PM ET
+  Buys/Redeems: 1/1
+  P&L: $1.21 (38.0%)
+Bitcoin Up or Down - May 21, 3:10PM-3:15PM ET
+  Buys/Redeems: 1/1
+  P&L: $1.09 (59.6%)

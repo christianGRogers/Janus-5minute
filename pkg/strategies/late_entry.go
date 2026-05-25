@@ -251,22 +251,35 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		highConfBuyMet = midPrice >= les.highConfThreshold   // 0.75+ minimum buy
 		veryHighConfBuyMet = midPrice >= les.veryHighConfBuy  // 0.85+ preferred buy
 		lossExitMet = midPrice <= les.minHoldPrice            // 0.70- sell to minimize loss
-		minSizeForBuy := math.Min(
-			maxPosSize / book.BestAskParsed,
-			book.BestAskSizeParsed*0.75,
-		) > 0.5
-		minSizeForConservativeBuy := math.Min(
-			(maxPosSize * 0.25) / book.BestAskParsed,
-			book.BestAskSizeParsed*0.15,
-		) > 0.5
-		minSizeForStandardBuy := math.Min(
-			(maxPosSize * 0.35) / book.BestAskParsed,
-			book.BestAskSizeParsed*0.25,
-		) > 0.5
-		minSizeForLossExit := math.Min(
-			(maxPosSize * 0.5) / book.BestBidParsed,
-			book.BestBidSizeParsed*0.5,
-		) > 0.5
+		
+		// CRITICAL: Prevent division by zero on one-sided markets
+		// If BestAskParsed is 0, we cannot buy (no ask side), so these checks fail
+		minSizeForBuy := false
+		minSizeForConservativeBuy := false
+		minSizeForStandardBuy := false
+		minSizeForLossExit := false
+		
+		if book.BestAskParsed > 0 {
+			minSizeForBuy = math.Min(
+				maxPosSize / book.BestAskParsed,
+				book.BestAskSizeParsed*0.75,
+			) > 0.5
+			minSizeForConservativeBuy = math.Min(
+				(maxPosSize * 0.25) / book.BestAskParsed,
+				book.BestAskSizeParsed*0.15,
+			) > 0.5
+			minSizeForStandardBuy = math.Min(
+				(maxPosSize * 0.35) / book.BestAskParsed,
+				book.BestAskSizeParsed*0.25,
+			) > 0.5
+		}
+		
+		if book.BestBidParsed > 0 {
+			minSizeForLossExit = math.Min(
+				(maxPosSize * 0.5) / book.BestBidParsed,
+				book.BestBidSizeParsed*0.5,
+			) > 0.5
+		}
 
 		// Log all conditions
 		log.Printf("[LateEntry] %s: CONDITIONS @ %ds remaining (maxPosSize: $%.2f) [%s]:", marketID, secondsRemaining, maxPosSize, outcome)
