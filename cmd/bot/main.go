@@ -80,6 +80,15 @@ func main() {
 		strategyName = "LateEntry" // Default strategy
 	}
 
+	// Load pre-trained risk scores from static configuration
+	// This must happen before strategy initialization so risk-based position sizing works
+	if err := config.LoadRiskScores(); err != nil {
+		log.Printf("⚠️  Warning: Failed to load risk scores: %v\n", err)
+		log.Printf("⚠️  Trading will proceed but risk adjustment will not be applied\n")
+	} else {
+		log.Printf("✅ Risk scores loaded successfully - position sizing will be adjusted by hour\n")
+	}
+
 	switch strategyName {
 	case "TwoSide":
 		strategy = strategies.NewTwoSideStrategy(tradingEngine)

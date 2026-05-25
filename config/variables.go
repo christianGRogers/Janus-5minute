@@ -1,6 +1,12 @@
 package config
 
-import "os"
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+)
 
 // PaperTradingRealisticConfig controls realism features for paper trading simulations
 type PaperTradingRealisticConfig struct {
@@ -93,4 +99,129 @@ func DefaultConfig() *PolymarketConfig {
 			},
 		},
 	}
+}
+
+// ===== Risk Scoring Configuration =====
+
+// RiskScoresConfig holds the pre-trained risk scores for each hour (0-23)
+type RiskScoresConfig struct {
+	GeneratedAt string             `json:"generated_at"`
+	ModelType   string             `json:"model_type"`
+	Scale       string             `json:"scale"`
+	Hours       map[string]float64 `json:"hours"`
+}
+
+var (
+	// GlobalRiskScores is the singleton instance of loaded risk scores
+	GlobalRiskScores RiskScoresConfig
+	riskScoresLoaded bool
+)
+
+// LoadRiskScores loads the pre-trained risk scores from the JSON configuration file
+// This should be called once at application startup
+func LoadRiskScores() error {
+	if riskScoresLoaded {
+		return nil // Already loaded
+	}
+
+	// Try multiple paths to find the risk_scores.json file
+	possiblePaths := []string{
+		"config/risk_scores.json",
+		"./config/risk_scores.json",
+		filepath.Join(os.Getenv("GOPATH"), "config", "risk_scores.json"),
+	}
+
+	var config RiskScoresConfig
+	var lastErr error
+
+	for _, path := range possiblePaths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			err = json.Unmarshal(data, &config)
+			if err == nil {
+				GlobalRiskScores = config
+				riskScoresLoaded = true
+				log.Printf("[Risk Config] Loaded risk scores from: %s", path)
+				logRiskScoresSummary()
+				return nil
+			}
+			lastErr = err
+		}
+	}
+
+	return fmt.Errorf("failed to load risk_scores.json from any path: %w", lastErr)
+}
+
+// GetRiskScoreForHour returns the risk score (0-1) for a given hour (0-23)
+// Returns 0.5 (neutral risk) if the hour is not found
+func GetRiskScoreForHour(hour int) float64 {
+	if !riskScoresLoaded {
+		log.Printf("[Risk Config] WARNING: Risk scores not loaded! Call LoadRiskScores() at startup")
+		return 0.5 // Default neutral risk
+	}
+
+	if hour < 0 || hour > 23 {
+		log.Printf("[Risk Config] Invalid hour: %d (must be 0-23)", hour)
+		return 0.5
+	}
+
+	hourStr := fmt.Sprintf("%d", hour)
+	if score, exists := GlobalRiskScores.Hours[hourStr]; exists {
+		return score
+	}
+
+	return 0.5 // Default neutral risk
+}
+
+// GetSafetyLevel returns a qualitative safety level for a risk score
+func GetSafetyLevel(riskScore float64) string {
+	if riskScore >= 0.8 {
+		return "VERY_SAFE"
+	} else if riskScore >= 0.6 {
+		return "SAFE"
+	} else if riskScore >= 0.4 {
+		return "MODERATE"
+	} else {
+		return "RISKY"
+	}
+}
+
+// logRiskScoresSummary logs a summary of the loaded risk scores
+func logRiskScoresSummary() {
+	if len(GlobalRiskScores.Hours) != 24 {
+		log.Printf("[Risk Config] WARNING: Expected 24 hours, got %d", len(GlobalRiskScores.Hours))
+		return
+	}
+
+	// Find safest and riskiest hours
+	var safeHour, riskyHour int
+	var maxScore, minScore float64 = -1, 2
+
+	for i := 0; i < 24; i++ {
+		hourStr := fmt.Sprintf("%d", i)
+		if score, exists := GlobalRiskScores.Hours[hourStr]; exists {
+			if score > maxScore {
+				maxScore = score
+				safeHour = i
+			}
+			if score < minScore {
+				minScore = score
+				riskyHour = i
+			}
+		}
+	}
+
+	log.Printf("[Risk Config] Risk Scores Loaded - Safest: %02d:00 (%.4f), Riskiest: %02d:00 (%.4f)", 
+		safeHour, maxScore, riskyHour, minScore)
+}
+
+// IsRiskScoresLoaded returns true if risk scores have been successfully loaded
+func IsRiskScoresLoaded() bool {
+	return riskScoresLoaded
+}
+
+// ReloadRiskScores forces a reload of the risk scores (useful for testing)
+func ReloadRiskScores() error {
+	riskScoresLoaded = false
+	return LoadRiskScores()
 }

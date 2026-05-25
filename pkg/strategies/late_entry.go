@@ -7,6 +7,7 @@ import (
 
 	"janus-bot/pkg/polymarket"
 	"janus-bot/pkg/trading"
+	"janus-bot/config"
 )
 
 // LateEntryStrategy prioritizes small safe wins towards the end of a 5-minute market window
@@ -53,12 +54,40 @@ func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
 	return strategy
 }
 
+// getRiskAdjustmentMultiplier returns a position size multiplier based on the current hour's risk score
+// Higher risk score (safer trading) = higher multiplier (can take larger positions)
+// Lower risk score (riskier trading) = lower multiplier (must take smaller positions)
+// Risk adjustment is applied on top of all other safety constraints
+func (les *LateEntryStrategy) getRiskAdjustmentMultiplier() float64 {
+	now := time.Now()
+	hour := now.Hour() // 0-23
+
+	// Get the pre-trained risk score for this hour (0-1 scale)
+	// 0 = riskiest, 1 = safest
+	riskScore := config.GetRiskScoreForHour(hour)
+
+	// Convert to position size multiplier:
+	// If risk score is low (risky hour): multiply position sizes down (e.g., 0.3 = 30% of normal)
+	// If risk score is high (safe hour): multiply position sizes up (e.g., 1.0 = 100% of normal, or even 1.2 = 120%)
+	
+	// Scale: 0 risk = 0.3x (very conservative), 0.5 risk = 0.65x (moderate), 1.0 risk = 1.0x (full size)
+	// Using linear interpolation: multiplier = 0.3 + (riskScore * 0.7)
+	multiplier := 0.3 + (riskScore * 0.7)
+
+	safetyLevel := config.GetSafetyLevel(riskScore)
+	log.Printf("[LateEntry] %02d:00 Risk Score: %.4f (%s) -> Position Multiplier: %.2f", 
+		hour, riskScore, safetyLevel, multiplier)
+
+	return multiplier
+}
+
 // Name returns the strategy name
 func (les *LateEntryStrategy) Name() string {
 	return "LateEntry"
 }
 
 // calculateSafePositionSize calculates position size respecting both per-trade (20%) and per-market (30%) caps
+// Also applies a risk adjustment multiplier based on the current hour's risk score from ML model
 // Returns: (maxPerTradeSize, maxPerMarketSize, recommendedSize, isWithinMarketCap)
 func (les *LateEntryStrategy) calculateSafePositionSize(marketID string, percentOfMax float64) (float64, float64, float64, bool) {
 	// Get current balance
@@ -68,9 +97,14 @@ func (les *LateEntryStrategy) calculateSafePositionSize(marketID string, percent
 	
 	balance := les.Engine.GetBalance()
 	
-	// Per-trade limit: RiskTolerance (0.2) * percentOfMax
-	// Example: For 0.25 tier: 0.2 * 0.25 = 0.05 = 5% of balance
-	maxPerTradeSize := balance * les.Config.RiskTolerance * percentOfMax
+	// Get risk adjustment multiplier based on current hour
+	// This scales all position sizes based on how safe/risky the current hour is
+	riskMultiplier := les.getRiskAdjustmentMultiplier()
+	
+	// Per-trade limit: RiskTolerance (0.2) * percentOfMax * riskMultiplier
+	// Example: For 0.25 tier at safe hour (1.0x multiplier): 0.2 * 0.25 * 1.0 = 0.05 = 5% of balance
+	// Example: For 0.25 tier at risky hour (0.3x multiplier): 0.2 * 0.25 * 0.3 = 0.015 = 1.5% of balance
+	maxPerTradeSize := balance * les.Config.RiskTolerance * percentOfMax * riskMultiplier
 	
 	// Per-market limit: 30% of balance - current exposure on this market
 	currentMarketExposure := les.marketExposure[marketID]
