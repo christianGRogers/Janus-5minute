@@ -43,6 +43,15 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         Dict with order result or error
     """
     try:
+        # Validate minimum price requirement
+        MIN_PRICE = 0.85
+        if price < MIN_PRICE:
+            return {
+                "success": False,
+                "error": f"Price must be at least ${MIN_PRICE} per share. Provided price: {price}",
+                "errorMsg": f"Price too low. Minimum: ${MIN_PRICE}, Got: {price}"
+            }
+        
         # Get credentials
         private_key = os.getenv("PRIVATE_KEY")
         address = os.getenv("PROXY_ADDRESS")  # The address that will fund the order (must match API key derivation)
