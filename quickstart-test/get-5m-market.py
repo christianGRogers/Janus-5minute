@@ -4,6 +4,7 @@ Fetches the current 5-minute BTC market token ID from Polymarket using the Gamma
 """
 
 import requests
+import json
 import time
 
 GAMMA_API_BASE_URL = "https://gamma-api.polymarket.com"
@@ -53,11 +54,25 @@ def get_current_5m_market_token_id():
             market = markets[0]
             
             # Extract the UP token ID from clobTokenIds
-            clob_token_ids = market.get("clobTokenIds", [])
+            # clobTokenIds can be either a JSON string or a direct array
+            clob_token_ids_raw = market.get("clobTokenIds", "")
+            token_ids = []
             
-            if clob_token_ids and len(clob_token_ids) > 0:
+            if isinstance(clob_token_ids_raw, str):
+                # JSON string - parse it (following production bot method)
+                if clob_token_ids_raw:
+                    try:
+                        token_ids = json.loads(clob_token_ids_raw)
+                    except json.JSONDecodeError:
+                        print(f"Failed to parse clobTokenIds JSON: {clob_token_ids_raw}")
+                        token_ids = []
+            elif isinstance(clob_token_ids_raw, list):
+                # Direct array
+                token_ids = clob_token_ids_raw
+            
+            if token_ids and len(token_ids) > 0:
                 # First token is typically UP, second is DOWN
-                up_token_id = clob_token_ids[0]
+                up_token_id = token_ids[0]
                 
                 result = {
                     "token_id": up_token_id,

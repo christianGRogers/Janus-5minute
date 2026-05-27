@@ -157,9 +157,11 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         except Exception as e:
             print(f"DEBUG: Could not fetch market details: {e}, using defaults", file=sys.stderr)
         
-        print(f"DEBUG: Calling create_and_post_order with order_type=GTC", file=sys.stderr)
+        print(f"DEBUG: Calling create_and_post_order with order_type=GTC, post_only=True", file=sys.stderr)
         
         # Create and post order with order_type parameter (v2 API)
+        # postOnly=True prevents price slippage by ensuring the order only rests on the book
+        # and doesn't match immediately at a better price (indicates slipage and we cannot set a lower limit price inside the api call, so we use postOnly to ensure the order is placed at the specified price or not at all)
         response = client.create_and_post_order(
             OrderArgs(
                 token_id=token_id,
@@ -168,7 +170,8 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
                 side=BUY if side.upper() == "BUY" else SELL
             ),
             options=PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
-            order_type=OrderType.GTC  # Good Till Cancel
+            order_type=OrderType.GTC,  # Good Till Cancel
+            post_only=True  # Prevent slippage: order rests on book, doesn't match immediately
         )
         
         print(f"DEBUG: Order response: {response}", file=sys.stderr)
