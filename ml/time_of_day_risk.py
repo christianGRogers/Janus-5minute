@@ -466,7 +466,8 @@ def get_current_hour_risk() -> float:
 
 def initialize_from_workspace(workspace_root: str) -> TimeOfDayRiskAssessment:
     """
-    Auto-discover and train on all CSV files in the workspace.
+    Auto-discover and train on the latest 2 CSV files in the workspace.
+    Weights the most recent file more heavily.
     
     Args:
         workspace_root: Root directory of the workspace
@@ -480,7 +481,22 @@ def initialize_from_workspace(workspace_root: str) -> TimeOfDayRiskAssessment:
     if not csv_files:
         raise ValueError(f"No market_export.csv files found in {workspace_root}")
 
-    csv_paths = [str(f) for f in csv_files]
-    print(f"Found {len(csv_paths)} CSV files for training")
+    # Sort by modification time (newest first)
+    csv_files_sorted = sorted(csv_files, key=lambda f: f.stat().st_mtime, reverse=True)
+    
+    # Take only the latest 2 files
+    latest_csvs = csv_files_sorted[:2]
+    
+    # Weight the most recent file more heavily by duplicating it
+    # Latest file (index 0) gets 2x weight, older file (index 1) gets 1x weight
+    csv_paths = [str(latest_csvs[0])] * 2  # Most recent, duplicated for 2x weight
+    if len(latest_csvs) > 1:
+        csv_paths.append(str(latest_csvs[1]))  # Second most recent, 1x weight
+    
+    print(f"Found {len(csv_files)} CSV files total")
+    print(f"Using latest 2 files for training (with 2x weight on most recent):")
+    for i, csv_file in enumerate(latest_csvs):
+        weight = "2x" if i == 0 else "1x"
+        print(f"  {weight}: {csv_file.parent.name}/{csv_file.name}")
     
     return initialize_risk_model(csv_paths)
