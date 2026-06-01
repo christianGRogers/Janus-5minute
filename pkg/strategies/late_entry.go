@@ -18,7 +18,7 @@ import (
 // 4. EXTREME confidence tier (0.98+): Aggressive bets in final seconds only
 // 5. CRITICAL: Tracks inventory - only allows SELL when shares are actually owned
 // 6. RISK MANAGEMENT: Per-market risk cap of 30% prevents chain buy concentration
-// 7. LOSS COOLDOWN: After a loss >= 0.5 USDC, applies 0.5x risk multiplier for 3 hours
+// 7. LOSS COOLDOWN: After a loss >= 0.5 USDC, applies 0.25x risk multiplier for 3 hours (75% reduction)
 //    Market N closes → Market N+1 starts → Check previous market window for losses and queue market N
 type LateEntryStrategy struct {
 	*BaseStrategy

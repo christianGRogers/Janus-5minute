@@ -38,7 +38,7 @@ type LossCooldown struct {
 	MarketTitle     string    // Market title (e.g., "Bitcoin Up or Down - May 29, 11:05PM-11:10PM ET")
 	LossTime        time.Time // When the loss occurred
 	CooldownEndTime time.Time // When the cooldown expires (3 hours later)
-	RiskMultiplier  float64   // Reduced position size multiplier (0.5 = 50% of normal)
+	RiskMultiplier  float64   // Reduced position size multiplier (0.25 = 25% of normal, 75% reduction)
 	LossPnL         float64   // Actual P&L from the loss
 }
 
@@ -129,11 +129,11 @@ func (lt *LossTracker) CheckForNewLosses() (bool, error) {
 					MarketTitle:     pos.Title,
 					LossTime:        time.Unix(pos.Timestamp, 0),
 					CooldownEndTime: time.Unix(pos.Timestamp, 0).Add(lt.cooldownDuration),
-					RiskMultiplier:  0.5, // Apply 50% risk reduction
+					RiskMultiplier:  0.25, // Apply 75% risk reduction (25% of normal position size)
 					LossPnL:         pos.RealizedPnl,
 				}
 				lt.mu.Unlock()
-				log.Printf("[LossTracker] Loss cooldown renewed for %s: %.4f USDC loss, risk multiplier: 0.5x for 3h", pos.Title, pos.RealizedPnl)
+				log.Printf("[LossTracker] Loss cooldown renewed for %s: %.4f USDC loss, risk multiplier: 0.25x for 3h", pos.Title, pos.RealizedPnl)
 				newLosses = true
 			}
 		} else {
@@ -143,11 +143,11 @@ func (lt *LossTracker) CheckForNewLosses() (bool, error) {
 				MarketTitle:     pos.Title,
 				LossTime:        time.Unix(pos.Timestamp, 0),
 				CooldownEndTime: time.Unix(pos.Timestamp, 0).Add(lt.cooldownDuration),
-				RiskMultiplier:  0.5, // Apply 50% risk reduction
+				RiskMultiplier:  0.25, // Apply 75% risk reduction (25% of normal position size)
 				LossPnL:         pos.RealizedPnl,
 			}
 			lt.mu.Unlock()
-			log.Printf("[LossTracker] NEW LOSS DETECTED: %s -> %.4f USDC loss, applying 0.5x risk multiplier for 3h", pos.Title, pos.RealizedPnl)
+			log.Printf("[LossTracker] NEW LOSS DETECTED: %s -> %.4f USDC loss, applying 0.25x risk multiplier for 3h", pos.Title, pos.RealizedPnl)
 			newLosses = true
 		}
 	}
