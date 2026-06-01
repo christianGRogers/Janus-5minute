@@ -11,8 +11,9 @@ import (
 	"time"
 )
 
-// ClosedPosition represents a closed position from the Polymarket API
-type ClosedPosition struct {
+// PolymarketClosedPosition represents a closed position from the Polymarket Data API
+// This is different from the internal ClosedPosition struct used for paper trading
+type PolymarketClosedPosition struct {
 	ProxyWallet     string  `json:"proxyWallet"`
 	Asset           string  `json:"asset"`
 	ConditionID     string  `json:"conditionId"`
@@ -191,7 +192,7 @@ func (lt *LossTracker) GetActiveCooldowns() map[string]*LossCooldown {
 }
 
 // fetchClosedPositions calls the Polymarket Data API to get closed positions for this user
-func (lt *LossTracker) fetchClosedPositions() ([]*ClosedPosition, error) {
+func (lt *LossTracker) fetchClosedPositions() ([]*PolymarketClosedPosition, error) {
 	// Construct URL with query parameters
 	url := fmt.Sprintf("%s/closed-positions?user=%s&limit=50&sortBy=TIMESTAMP&sortDirection=DESC",
 		lt.dataAPIEndpoint, lt.userAddress)
@@ -211,7 +212,7 @@ func (lt *LossTracker) fetchClosedPositions() ([]*ClosedPosition, error) {
 	}
 
 	// Parse response
-	var positions []*ClosedPosition
+	var positions []*PolymarketClosedPosition
 	if err := json.NewDecoder(resp.Body).Decode(&positions); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
