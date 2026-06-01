@@ -171,7 +171,7 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
             ),
             options=PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk),
             order_type=OrderType.GTC,  # Good Till Cancel
-            post_only=True  # Prevent slippage: order rests on book, doesn't match immediately
+            post_only=False  # Prevent slippage: order rests on book, doesn't match immediately
         )
         
         print(f"DEBUG: Order response: {response}", file=sys.stderr)

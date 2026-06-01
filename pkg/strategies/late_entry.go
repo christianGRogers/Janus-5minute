@@ -18,11 +18,14 @@ import (
 // 4. EXTREME confidence tier (0.98+): Aggressive bets in final seconds only
 // 5. CRITICAL: Tracks inventory - only allows SELL when shares are actually owned
 // 6. RISK MANAGEMENT: Per-market risk cap of 30% prevents chain buy concentration
+// 7. LOSS COOLDOWN: After a loss >= 0.5 USDC, applies 0.25x risk multiplier for 3 hours (75% reduction)
+//    Market N closes → Market N+1 starts → Check previous market window for losses and queue market N
 type LateEntryStrategy struct {
 	*BaseStrategy
 	windowStartTime time.Time
 	lastCheckTime   time.Time
 	lastTradeTime   time.Time
+	currentMarketsSlugs map[string]bool       // Track market slugs active in this window (for queueing at end)
 	positionsThisWindow map[string]bool       // Track if we've already traded this market this window
 	ownedInventory      map[string]float64    // Track shares owned by market ID (for proper sell gating)
 	marketExposure      map[string]float64    // Track total USDC exposure per market (buys only, at cost)
@@ -31,15 +34,17 @@ type LateEntryStrategy struct {
 	veryHighConfBuy     float64               // Very high confidence: 0.85+ (increased position size)
 	extremeConfidence   float64               // Extreme confidence for last-second trades (0.98+)
 	minHoldPrice        float64               // Minimum price to hold: 0.70 (exit/sell below this to minimize loss)
+	lossTracker         *trading.LossTracker  // Track losses and apply cooldowns
 }
 
 // NewLateEntryStrategy creates a new late entry strategy
 func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
-	log.Printf("Initializing LateEntryStrategy - BUY HIGH MODE: MinBuy=0.75+, PreferHigh=0.85+, ExtremeConf=0.98+, LossExit=0.70-, PER-MARKET CAP=30%%")
+	log.Printf("Initializing LateEntryStrategy - BUY HIGH MODE: MinBuy=0.75+, PreferHigh=0.85+, ExtremeConf=0.98+, LossExit=0.70-, PER-MARKET CAP=30%%, LOSS COOLDOWN: 0.5x for 3h")
 	strategy := &LateEntryStrategy{
 		BaseStrategy:        NewBaseStrategy(engine),
 		windowStartTime:     time.Now(),
 		lastCheckTime:       time.Now(),
+		currentMarketsSlugs: make(map[string]bool),
 		positionsThisWindow: make(map[string]bool),
 		ownedInventory:      make(map[string]float64),
 		marketExposure:      make(map[string]float64),
@@ -48,17 +53,24 @@ func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
 		veryHighConfBuy:     0.95,        // Prefer higher confidence (0.95+) for better wins
 		extremeConfidence:   0.98,        // Aggressive trading in final seconds
 		minHoldPrice:        0.70,        // Sell inventory if price drops below 0.70 (loss minimization)
+		lossTracker:         nil,         // Will be set via SetLossTracker
 	}
 	strategy.Config.RiskTolerance = 0.40
 	strategy.Config.MaxPositionSize = 0 // Disable fixed max, use dynamic sizing
 	return strategy
 }
 
-// getRiskAdjustmentMultiplier returns a position size multiplier based on the current hour's risk score
-// Higher risk score (safer trading) = higher multiplier (can take larger positions)
-// Lower risk score (riskier trading) = lower multiplier (must take smaller positions)
-// Risk adjustment is applied on top of all other safety constraints
-func (les *LateEntryStrategy) getRiskAdjustmentMultiplier() float64 {
+// SetLossTracker sets the loss tracker for this strategy
+func (les *LateEntryStrategy) SetLossTracker(tracker *trading.LossTracker) {
+	les.lossTracker = tracker
+	log.Printf("[LateEntry] Loss tracker configured - will apply cooldowns after losses")
+}
+
+// getRiskAdjustmentMultiplier returns a position size multiplier based on:
+// 1. Current hour's risk score (from ML model)
+// 2. Loss cooldown multiplier (0.5x after losses)
+// Combined multiplier is the product of both factors
+func (les *LateEntryStrategy) getRiskAdjustmentMultiplier(marketTitle string) float64 {
 	now := time.Now()
 	hour := now.Hour() // 0-23
 
@@ -72,13 +84,27 @@ func (les *LateEntryStrategy) getRiskAdjustmentMultiplier() float64 {
 	
 	// Scale: 0 risk = 0.3x (very conservative), 0.5 risk = 0.65x (moderate), 1.0 risk = 1.0x (full size)
 	// Using linear interpolation: multiplier = 0.3 + (riskScore * 0.7)
-	multiplier := 0.3 + (riskScore * 0.7)
+	hourMultiplier := 0.3 + (riskScore * 0.7)
+
+	// Get loss cooldown multiplier (1.0 = normal, 0.5 = under cooldown)
+	lossMultiplier := 1.0
+	if les.lossTracker != nil {
+		lossMultiplier = les.lossTracker.GetRiskMultiplier(marketTitle)
+	}
+
+	// Combined multiplier: apply loss cooldown on top of hour-based risk
+	combinedMultiplier := hourMultiplier * lossMultiplier
 
 	safetyLevel := config.GetSafetyLevel(riskScore)
-	log.Printf("[LateEntry] %02d:00 Risk Score: %.4f (%s) -> Position Multiplier: %.2f", 
-		hour, riskScore, safetyLevel, multiplier)
+	if lossMultiplier < 1.0 {
+		log.Printf("[LateEntry] %02d:00 Risk Score: %.4f (%s) -> Hour Multiplier: %.2f | Loss Cooldown: %.2fx -> Combined: %.2f",
+			hour, riskScore, safetyLevel, hourMultiplier, lossMultiplier, combinedMultiplier)
+	} else {
+		log.Printf("[LateEntry] %02d:00 Risk Score: %.4f (%s) -> Position Multiplier: %.2f", 
+			hour, riskScore, safetyLevel, combinedMultiplier)
+	}
 
-	return multiplier
+	return combinedMultiplier
 }
 
 // Name returns the strategy name
@@ -88,8 +114,9 @@ func (les *LateEntryStrategy) Name() string {
 
 // calculateSafePositionSize calculates position size respecting both per-trade (20%) and per-market (30%) caps
 // Also applies a risk adjustment multiplier based on the current hour's risk score from ML model
+// and loss cooldown multiplier if market is under cooldown
 // Returns: (maxPerTradeSize, maxPerMarketSize, recommendedSize, isWithinMarketCap)
-func (les *LateEntryStrategy) calculateSafePositionSize(marketID string, percentOfMax float64) (float64, float64, float64, bool) {
+func (les *LateEntryStrategy) calculateSafePositionSize(marketID string, marketTitle string, percentOfMax float64) (float64, float64, float64, bool) {
 	// Get current balance
 	if les.Engine == nil {
 		return 0, 0, 0, false
@@ -97,13 +124,14 @@ func (les *LateEntryStrategy) calculateSafePositionSize(marketID string, percent
 	
 	balance := les.Engine.GetBalance()
 	
-	// Get risk adjustment multiplier based on current hour
-	// This scales all position sizes based on how safe/risky the current hour is
-	riskMultiplier := les.getRiskAdjustmentMultiplier()
+	// Get risk adjustment multiplier based on current hour AND loss cooldown
+	// This scales all position sizes based on how safe/risky the current hour is, plus any active loss cooldowns
+	riskMultiplier := les.getRiskAdjustmentMultiplier(marketTitle)
 	
 	// Per-trade limit: RiskTolerance (0.2) * percentOfMax * riskMultiplier
 	// Example: For 0.25 tier at safe hour (1.0x multiplier): 0.2 * 0.25 * 1.0 = 0.05 = 5% of balance
 	// Example: For 0.25 tier at risky hour (0.3x multiplier): 0.2 * 0.25 * 0.3 = 0.015 = 1.5% of balance
+	// Example: For 0.25 tier under loss cooldown (0.5x multiplier): 0.2 * 0.25 * 0.5 = 0.025 = 2.5% of balance
 	maxPerTradeSize := balance * les.Config.RiskTolerance * percentOfMax * riskMultiplier
 	
 	// Per-market limit: 30% of balance - current exposure on this market
@@ -189,6 +217,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		} else {
 			continue
 		}
+
+		// Track this market as active in current window (for queueing when window ends)
+		les.currentMarketsSlugs[marketID] = true
 
 		// Log market state
 		log.Printf("[LateEntry] %s: Market state - Bid: %.4f (size: %.1f), Ask: %.4f (size: %.1f), Liquidity: %.0f", 
@@ -305,7 +336,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			}
 			
 			// Calculate safe position size respecting per-market cap
-			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, 1.0) // 100% of tier
+			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 1.0) // 100% of tier
 			
 			if !withinCap {
 				log.Printf("[LateEntry] %s (%s): ✗ BUY REJECTED - Would exceed 30%% per-market cap (current: $%.2f, max: $%.2f, remaining: $%.2f)", 
@@ -350,7 +381,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			}
 			
 			// Calculate safe position size respecting per-market cap
-			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, 0.25) // 25% of tier
+			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 0.25) // 25% of tier
 			
 			if !withinCap {
 				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 1 REJECTED - Would exceed 30%% per-market cap (current: $%.2f, max: $%.2f, remaining: $%.2f)", 
@@ -389,7 +420,7 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 			}
 			
 			// Calculate safe position size respecting per-market cap
-			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, 0.35) // 35% of tier
+			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 0.35) // 35% of tier
 			
 			if !withinCap {
 				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 2 REJECTED - Would exceed 30%% per-market cap (current: $%.2f, max: $%.2f, remaining: $%.2f)", 
@@ -483,17 +514,56 @@ func (les *LateEntryStrategy) OnOrderPlaced(marketID string, side string, price 
 }
 
 // OnMarketWindowChange is called when a new 5-minute window begins
+// Flow: Market N closes → Market N+1 starts
+//       1. Check losses from queued markets (market N closed)
+//       2. Queue current markets (market N) for checking when N+1 starts
 func (les *LateEntryStrategy) OnMarketWindowChange() {
 	les.windowStartTime = time.Now()
 	les.lastCheckTime = time.Now()
 	les.ownedInventory = make(map[string]float64)   // Reset inventory for new window
 	les.marketExposure = make(map[string]float64)   // Reset market exposure for new window
+	
+	// Check for losses when market window changes (every 5 minutes)
+	// This polls the Polymarket API to detect newly closed positions with losses from the previous market window
+	if les.lossTracker != nil {
+		go func() {
+			// Step 1: Get queued markets from previous window and check for losses
+			queuedMarkets := les.lossTracker.GetQueuedMarkets()
+			if len(queuedMarkets) > 0 {
+				log.Printf("[LateEntry] Checking losses for %d queued markets from previous window", len(queuedMarkets))
+				newLosses, err := les.lossTracker.CheckForNewLosses()
+				if err != nil {
+					log.Printf("[LateEntry] Error checking for losses: %v", err)
+				} else if newLosses {
+					// Log active cooldowns
+					cooldowns := les.lossTracker.GetActiveCooldowns()
+					for title, cd := range cooldowns {
+						remaining := cd.CooldownEndTime.Sub(time.Now())
+						log.Printf("[LateEntry] Active cooldown for %s: %.2fx risk multiplier, expires in %.0f minutes", 
+							title, cd.RiskMultiplier, remaining.Minutes())
+					}
+				}
+			}
+			
+			// Step 2: Queue current markets for checking in the next window
+			for marketSlug := range les.currentMarketsSlugs {
+				les.lossTracker.QueueMarketForLossCheck(marketSlug)
+			}
+			
+			// Step 3: Clear current window markets for next evaluation cycle
+			les.currentMarketsSlugs = make(map[string]bool)
+		}()
+	} else {
+		// No loss tracker, but still clear markets
+		les.currentMarketsSlugs = make(map[string]bool)
+	}
 }
 
 // Reset clears internal state
 func (les *LateEntryStrategy) Reset() {
 	les.windowStartTime = time.Now()
 	les.lastCheckTime = time.Now()
+	les.currentMarketsSlugs = make(map[string]bool) // Reset market tracking
 	les.ownedInventory = make(map[string]float64)  // Reset inventory
 	les.marketExposure = make(map[string]float64)  // Reset market exposure
 	les.lastTradeTime = time.Time{}                // Reset last trade time
