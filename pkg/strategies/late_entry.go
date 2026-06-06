@@ -67,20 +67,21 @@ func (les *LateEntryStrategy) SetLossTracker(tracker *trading.LossTracker) {
 }
 
 // getRiskAdjustmentMultiplier returns a position size multiplier based on:
-// 1. Current hour's risk score (from ML model)
+// 1. Current 5-minute interval's risk score (from polynomial model)
 // 2. Loss cooldown multiplier (0.5x after losses)
 // Combined multiplier is the product of both factors
 func (les *LateEntryStrategy) getRiskAdjustmentMultiplier(marketTitle string) float64 {
 	now := time.Now()
-	hour := now.Hour() // 0-23
+	hour := now.Hour()     // 0-23
+	minute := now.Minute() // 0-59
 
-	// Get the pre-trained risk score for this hour (0-1 scale)
+	// Get the risk score for the current 5-minute interval using polynomial evaluation
 	// 0 = riskiest, 1 = safest
-	riskScore := config.GetRiskScoreForHour(hour)
+	riskScore := config.GetRiskScoreForFiveMinuteInterval(hour, minute)
 
 	// Convert to position size multiplier:
-	// If risk score is low (risky hour): multiply position sizes down (e.g., 0.3 = 30% of normal)
-	// If risk score is high (safe hour): multiply position sizes up (e.g., 1.0 = 100% of normal, or even 1.2 = 120%)
+	// If risk score is low (risky time): multiply position sizes down (e.g., 0.3 = 30% of normal)
+	// If risk score is high (safe time): multiply position sizes up (e.g., 1.0 = 100% of normal)
 	
 	// Scale: 0 risk = 0.3x (very conservative), 0.5 risk = 0.65x (moderate), 1.0 risk = 1.0x (full size)
 	// Using linear interpolation: multiplier = 0.3 + (riskScore * 0.7)
@@ -92,16 +93,16 @@ func (les *LateEntryStrategy) getRiskAdjustmentMultiplier(marketTitle string) fl
 		lossMultiplier = les.lossTracker.GetRiskMultiplier(marketTitle)
 	}
 
-	// Combined multiplier: apply loss cooldown on top of hour-based risk
+	// Combined multiplier: apply loss cooldown on top of time-based risk
 	combinedMultiplier := hourMultiplier * lossMultiplier
 
 	safetyLevel := config.GetSafetyLevel(riskScore)
 	if lossMultiplier < 1.0 {
-		log.Printf("[LateEntry] %02d:00 Risk Score: %.4f (%s) -> Hour Multiplier: %.2f | Loss Cooldown: %.2fx -> Combined: %.2f",
-			hour, riskScore, safetyLevel, hourMultiplier, lossMultiplier, combinedMultiplier)
+		log.Printf("[LateEntry] %02d:%02d Risk Score: %.4f (%s) -> 5-min Multiplier: %.2f | Loss Cooldown: %.2fx -> Combined: %.2f",
+			hour, minute, riskScore, safetyLevel, hourMultiplier, lossMultiplier, combinedMultiplier)
 	} else {
-		log.Printf("[LateEntry] %02d:00 Risk Score: %.4f (%s) -> Position Multiplier: %.2f", 
-			hour, riskScore, safetyLevel, combinedMultiplier)
+		log.Printf("[LateEntry] %02d:%02d Risk Score: %.4f (%s) -> Position Multiplier: %.2f", 
+			hour, minute, riskScore, safetyLevel, combinedMultiplier)
 	}
 
 	return combinedMultiplier
