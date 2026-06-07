@@ -221,6 +221,7 @@ func main() {
 				
 				// Update market data in dashboard
 				books := fetcher.GetAllLatestBooks()
+				
 				for cacheKey, book := range books {
 					if book != nil {
 						midPrice := (book.BestBidParsed + book.BestAskParsed) / 2
