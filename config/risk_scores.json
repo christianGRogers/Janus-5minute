@@ -1,31 +1,24 @@
-{
-  "generated_at": "C:\\Users\\chris\\Documents\\repos\\Janus-5minute",
-  "model_type": "TimeOfDayRiskAssessment",
+﻿{
+  "generated_at": "2026-06-06T18:46:39.390977",
+  "model_type": "TimeOfDayRiskAssessment_polynomial",
   "scale": "0=riskiest, 1=safest",
-  "hours": {
-    "0": 0.5,
-    "1": 0.5,
-    "2": 0.5,
-    "3": 0.9698,
-    "4": 0.65,
-    "5": 0.70,
-    "6": 1.0,
-    "7": 1.0,
-    "8": 0.7472,
-    "9": 1.0,
-    "10": 0.5,
-    "11": 0.9735,
-    "12": 0.5,
-    "13": 0.3,
-    "14": 0.8659,
-    "15": 0.5,
-    "16": 0.8808,
-    "17": 0.7558,
-    "18": 0.3,
-    "19": 0.8186,
-    "20": 0.96,
-    "21": 0.7426,
-    "22": 0.801,
-    "23": 0.9504
+  "description": "Risk scores computed using degree-6 polynomial: risk = sum(coeff[i] * x^i) where x is (hour*60+minute)/(24*60)",
+  "polynomial_coefficients": {
+    "degree": 6,
+    "coefficients": [
+      0.8769277091714252,
+      0.0,
+      0.017501847029200802,
+      0.05439058181692574,
+      -0.004590693006333526,
+      -0.03734880017598649,
+      -0.03879777171667099,
+      -0.02059506266007339
+    ],
+    "fit_quality": {
+      "rmse": 0.2563240683358685,
+      "r_squared": 0.0023116616739423668,
+      "training_samples": 288
+    }
   }
 }

@@ -105,10 +105,19 @@ func DefaultConfig() *PolymarketConfig {
 
 // RiskScoresConfig holds the pre-trained risk scores for each hour (0-23)
 type RiskScoresConfig struct {
-	GeneratedAt string             `json:"generated_at"`
-	ModelType   string             `json:"model_type"`
-	Scale       string             `json:"scale"`
-	Hours       map[string]float64 `json:"hours"`
+	GeneratedAt           string                `json:"generated_at"`
+	ModelType             string                `json:"model_type"`
+	Scale                 string                `json:"scale"`
+	Description           string                `json:"description"`
+	Hours                 map[string]float64    `json:"hours"`
+	FiveMinuteIntervals   map[string]float64    `json:"five_minute_intervals"`
+	PolynomialCoefficients *PolynomialRiskModel `json:"polynomial_coefficients"`
+}
+
+// PolynomialRiskModel holds polynomial coefficients for computing risk scores
+type PolynomialRiskModel struct {
+	Degree       int       `json:"degree"`
+	Coefficients []float64 `json:"coefficients"`
 }
 
 var (
@@ -171,6 +180,67 @@ func GetRiskScoreForHour(hour int) float64 {
 	}
 
 	return 0.5 // Default neutral risk
+}
+
+// GetRiskScoreForFiveMinuteInterval returns the risk score (0-1) for a 5-minute interval (HH:MM format)
+// Uses polynomial interpolation if available, otherwise falls back to hourly score or defaults to 1.0
+func GetRiskScoreForFiveMinuteInterval(hour int, minute int) float64 {
+	if !riskScoresLoaded {
+		log.Printf("[Risk Config] WARNING: Risk scores not loaded! Call LoadRiskScores() at startup")
+		return 0.5
+	}
+
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		log.Printf("[Risk Config] Invalid time: %02d:%02d", hour, minute)
+		return 0.5
+	}
+
+	// Try to get from pre-computed 5-minute intervals first
+	intervalStr := fmt.Sprintf("%02d:%02d", hour, minute)
+	if score, exists := GlobalRiskScores.FiveMinuteIntervals[intervalStr]; exists {
+		return score
+	}
+
+	// Fall back to polynomial evaluation if available
+	if GlobalRiskScores.PolynomialCoefficients != nil {
+		return evaluatePolynomialRiskScore(hour, minute, GlobalRiskScores.PolynomialCoefficients)
+	}
+
+	// Fall back to hourly score
+	return GetRiskScoreForHour(hour)
+}
+
+// evaluatePolynomialRiskScore evaluates the polynomial risk function at a given time
+// Normalizes time as x = (hour*60 + minute) / (24*60) to get a value between 0 and 1
+func evaluatePolynomialRiskScore(hour int, minute int, poly *PolynomialRiskModel) float64 {
+	if poly == nil || len(poly.Coefficients) == 0 {
+		return 0.5 // Default neutral risk
+	}
+
+	// Normalize time to [0, 1] range: minutes since midnight / total minutes in day
+	totalMinutes := float64(hour*60 + minute)
+	x := totalMinutes / (24.0 * 60.0)
+
+	// Evaluate polynomial: sum(coeff[i] * x^i for i in 0..degree)
+	result := 0.0
+	power := 1.0
+
+	for i := 0; i < len(poly.Coefficients); i++ {
+		result += poly.Coefficients[i] * power
+		if i < len(poly.Coefficients)-1 {
+			power *= x
+		}
+	}
+
+	// Clamp result to [0, 1] range
+	if result < 0.0 {
+		return 0.0
+	}
+	if result > 1.0 {
+		return 1.0
+	}
+
+	return result
 }
 
 // GetSafetyLevel returns a qualitative safety level for a risk score
