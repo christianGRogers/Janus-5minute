@@ -3,6 +3,7 @@ package strategies
 import (
 	"janus-bot/pkg/polymarket"
 	"janus-bot/pkg/trading"
+	"janus-bot/pkg/analytics"
 	"log"
 )
 
@@ -38,6 +39,9 @@ type Strategy interface {
 
 	// Reset clears any internal state
 	Reset()
+	
+	// SetDashboard sets the dashboard for displaying trading status
+	SetDashboard(dashboard *analytics.Dashboard)
 }
 
 // StrategyConfig holds common configuration for strategies
@@ -101,6 +105,11 @@ func (bs *BaseStrategy) GetDynamicPositionSize() float64 {
 func (bs *BaseStrategy) Evaluate(markets map[string]*polymarket.MarketBook) (bool, string, string, float64, float64) {
 	log.Printf("BaseStrategy Evaluate called - no logic implemented")
 	return false, "", "", 0, 0
+}
+
+// SetDashboard sets the dashboard for displaying trading status (default no-op)
+func (bs *BaseStrategy) SetDashboard(dashboard *analytics.Dashboard) {
+	// Default implementation does nothing - subclasses can override
 }
 
 // EvaluateV2 provides default implementation that wraps Evaluate for backwards compatibility

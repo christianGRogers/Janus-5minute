@@ -7,6 +7,7 @@ import (
 
 	"janus-bot/pkg/polymarket"
 	"janus-bot/pkg/trading"
+	"janus-bot/pkg/analytics"
 	"janus-bot/config"
 )
 
@@ -35,6 +36,7 @@ type LateEntryStrategy struct {
 	extremeConfidence   float64               // Extreme confidence for last-second trades (0.98+)
 	minHoldPrice        float64               // Minimum price to hold: 0.70 (exit/sell below this to minimize loss)
 	lossTracker         *trading.LossTracker  // Track losses and apply cooldowns
+	dashboard           *analytics.Dashboard  // Minimal static dashboard
 }
 
 // NewLateEntryStrategy creates a new late entry strategy
@@ -48,12 +50,13 @@ func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
 		positionsThisWindow: make(map[string]bool),
 		ownedInventory:      make(map[string]float64),
 		marketExposure:      make(map[string]float64),
-		maxMarketExposure:   0.40, // 35% of balance per market
+		maxMarketExposure:   0.4, // 40% of balance per market
 		highConfThreshold:   0.85,        // No buys below 0.85 - avoid medium confidence zone
 		veryHighConfBuy:     0.95,        // Prefer higher confidence (0.95+) for better wins
 		extremeConfidence:   0.98,        // Aggressive trading in final seconds
 		minHoldPrice:        0.70,        // Sell inventory if price drops below 0.70 (loss minimization)
 		lossTracker:         nil,         // Will be set via SetLossTracker
+		dashboard:           analytics.NewDashboard(engine.GetBalance()),
 	}
 	strategy.Config.RiskTolerance = 0.40
 	strategy.Config.MaxPositionSize = 0 // Disable fixed max, use dynamic sizing
@@ -64,6 +67,37 @@ func NewLateEntryStrategy(engine trading.TradingEngine) *LateEntryStrategy {
 func (les *LateEntryStrategy) SetLossTracker(tracker *trading.LossTracker) {
 	les.lossTracker = tracker
 	log.Printf("[LateEntry] Loss tracker configured - will apply cooldowns after losses")
+}
+
+// SetDashboard sets the dashboard for displaying trading status
+func (les *LateEntryStrategy) SetDashboard(dashboard *analytics.Dashboard) {
+	les.dashboard = dashboard
+}
+
+// UpdateDashboardRiskState updates the dashboard with current risk score and multipliers
+// This should be called periodically to keep the dashboard current
+func (les *LateEntryStrategy) UpdateDashboardRiskState() {
+	if les.dashboard == nil {
+		return
+	}
+	
+	now := time.Now()
+	hour := now.Hour()
+	minute := now.Minute()
+	
+	riskScore := config.GetRiskScoreForFiveMinuteInterval(hour, minute)
+	safetyLevel := config.GetSafetyLevel(riskScore)
+	
+	hourMultiplier := 0.3 + (riskScore * 0.7)
+	
+	lossMultiplier := 1.0
+	if les.lossTracker != nil {
+		lossMultiplier = les.lossTracker.GetRiskMultiplier("")
+	}
+	
+	combinedMultiplier := hourMultiplier * lossMultiplier
+	
+	les.dashboard.SetRiskState(riskScore, safetyLevel, hourMultiplier, lossMultiplier, combinedMultiplier)
 }
 
 // getRiskAdjustmentMultiplier returns a position size multiplier based on:
@@ -97,12 +131,10 @@ func (les *LateEntryStrategy) getRiskAdjustmentMultiplier(marketTitle string) fl
 	combinedMultiplier := hourMultiplier * lossMultiplier
 
 	safetyLevel := config.GetSafetyLevel(riskScore)
-	if lossMultiplier < 1.0 {
-		log.Printf("[LateEntry] %02d:%02d Risk Score: %.4f (%s) -> 5-min Multiplier: %.2f | Loss Cooldown: %.2fx -> Combined: %.2f",
-			hour, minute, riskScore, safetyLevel, hourMultiplier, lossMultiplier, combinedMultiplier)
-	} else {
-		log.Printf("[LateEntry] %02d:%02d Risk Score: %.4f (%s) -> Position Multiplier: %.2f", 
-			hour, minute, riskScore, safetyLevel, combinedMultiplier)
+	
+	// Update dashboard with risk state
+	if les.dashboard != nil {
+		les.dashboard.SetRiskState(riskScore, safetyLevel, hourMultiplier, lossMultiplier, combinedMultiplier)
 	}
 
 	return combinedMultiplier
@@ -180,12 +212,8 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 	// }
 	les.lastCheckTime = time.Now()
 
-	// Log every check that passes the frequency gate
-	log.Printf("[LateEntry] EVALUATE - Window: %ds into 300s (%d seconds remaining)", secondsIntoWindow, secondsRemaining)
-
 	// Only trade in the final minute (< 60 seconds remaining)
 	if secondsRemaining >= 30 {
-		log.Printf("[LateEntry]   → Too early to trade (need < 60 seconds remaining)")
 		return &TradeSignal{ShouldTrade: false}
 	}
 	
@@ -193,11 +221,8 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 	allowTrading := secondsRemaining < 90
 	
 	if !allowTrading {
-		log.Printf("[LateEntry]   → Too early to trade (need < 90 seconds remaining for high conf, or < 30 for standard)")
 		return &TradeSignal{ShouldTrade: false}
 	}
-	
-	log.Printf("[LateEntry]   → Within trading window! %d seconds remaining - checking markets...", secondsRemaining)
 
 	// Look through available markets for trading opportunities
 	for cacheKey, book := range markets {
@@ -222,19 +247,13 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		// Track this market as active in current window (for queueing when window ends)
 		les.currentMarketsSlugs[marketID] = true
 
-		// Log market state
-		log.Printf("[LateEntry] %s: Market state - Bid: %.4f (size: %.1f), Ask: %.4f (size: %.1f), Liquidity: %.0f", 
-			marketID, book.BestBidParsed, book.BestBidSizeParsed, book.BestAskParsed, book.BestAskSizeParsed, book.LiquidityParsed)
-
 		// Check for valid prices - we need at least one side with a valid price
 		if book.BestBidParsed == 0 && book.BestAskParsed == 0 {
-			log.Printf("[LateEntry] %s: Skipped - both bid and ask are 0", marketID)
 			continue
 		}
 
 		// Check liquidity requirement
 		if book.LiquidityParsed < les.Config.MinLiquidityUSDC {
-			log.Printf("[LateEntry] %s: Skipped - Liquidity %.0f < %.0f (required)", marketID, book.LiquidityParsed, les.Config.MinLiquidityUSDC)
 			continue
 		}
 
@@ -257,14 +276,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		// Only enforce strict spread limits when both sides have prices
 		if book.BestBidParsed > 0 && book.BestAskParsed > 0 {
 			if spreadPercent < les.Config.MinSpread || spreadPercent > les.Config.MaxSpread {
-				log.Printf("[LateEntry] %s: Skipped - Spread %.2f%% outside range [%.2f%%, %.2f%%]", marketID, spreadPercent, les.Config.MinSpread, les.Config.MaxSpread)
 				continue
 			}
-		} else {
-			log.Printf("[LateEntry] %s: One-sided market (bid=%.4f, ask=%.4f) - allowing wide spread", marketID, book.BestBidParsed, book.BestAskParsed)
 		}
-
-		log.Printf("[LateEntry] %s: Evaluating - Price: %.4f, Spread: %.2f%%, Liquidity: %.0f", marketID, midPrice, spreadPercent, book.LiquidityParsed)
 
 		inFinalSeconds := secondsRemaining < 10
 		inFinalMinute := secondsRemaining < 30
@@ -314,34 +328,21 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		}
 
 		// Log all conditions
-		log.Printf("[LateEntry] %s: CONDITIONS @ %ds remaining (maxPosSize: $%.2f) [%s]:", marketID, secondsRemaining, maxPosSize, outcome)
-		log.Printf("  [%v] In final seconds (<%d)           | inFinalSeconds=%v", boolToCheck(inFinalSeconds), 10, inFinalSeconds)
-		log.Printf("  [%v] Extreme high confidence (≥%.4f)   | price=%.4f", boolToCheck(extremeHighMet), les.extremeConfidence, midPrice)
-		log.Printf("  [%v] High confidence BUY (≥%.4f)      | price=%.4f (NO buys below 0.75)", boolToCheck(highConfBuyMet), les.highConfThreshold, midPrice)
-		log.Printf("  [%v] Prefer high BUY (≥%.4f)         | price=%.4f (LARGER position)", boolToCheck(veryHighConfBuyMet), les.veryHighConfBuy, midPrice)
-		log.Printf("  [%v] LOSS EXIT (≤%.4f)               | price=%.4f (SELL to minimize)", boolToCheck(lossExitMet), les.minHoldPrice, midPrice)
-		log.Printf("  [%v] Size OK for extreme BUY (%.1f)    | extremeSize=%.0f", boolToCheck(minSizeForBuy), 0.5, math.Min(maxPosSize/book.BestAskParsed, book.BestAskSizeParsed*0.75))
-		log.Printf("  [%v] Size OK for conservative BUY (%.1f) | conservativeSize=%.0f", boolToCheck(minSizeForConservativeBuy), 0.5, math.Min((maxPosSize*0.25)/book.BestAskParsed, book.BestAskSizeParsed*0.15))
-		log.Printf("  [%v] Size OK for standard BUY (%.1f)     | standardSize=%.0f", boolToCheck(minSizeForStandardBuy), 0.5, math.Min((maxPosSize*0.35)/book.BestAskParsed, book.BestAskSizeParsed*0.25))
-		log.Printf("  [%v] Size OK for loss exit SELL (%.1f)    | exitSize=%.0f", boolToCheck(minSizeForLossExit), 0.5, math.Min((maxPosSize*0.5)/book.BestBidParsed, book.BestBidSizeParsed*0.5))
+		// (removed verbose logging - dashboard shows live state)
 
 		// STRATEGY 1: Final seconds - aggressive trading at extreme confidence (0.98+)
 		if inFinalSeconds {
-			log.Printf("[LateEntry] %s (%s): FINAL SECONDS - checking for extreme confidence...", marketID, outcome)
 			// Only trade at extreme certainty: 0.98+
 			if extremeHighMet && minSizeForBuy {
 			// HARD MINIMUM: Verify actual share price is above $0.85 before placing order
 			if book.BestAskParsed < 0.85 {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY CANCELLED - Share price $%.4f below hard minimum $0.85", marketID, outcome, book.BestAskParsed)
 				continue
 			}
 			
 			// Calculate safe position size respecting per-market cap
-			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 1.0) // 100% of tier
+			_, _, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 1.0) // 100% of tier
 			
 			if !withinCap {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY REJECTED - Would exceed 30%% per-market cap (current: $%.2f, max: $%.2f, remaining: $%.2f)", 
-					marketID, outcome, les.marketExposure[marketID], maxPosSize*les.maxMarketExposure, marketRemaining)
 				continue
 			}
 			
@@ -350,8 +351,6 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 				recommendedSize / book.BestAskParsed, // Cap by safe position size in USDC
 			)
 			
-			log.Printf("[LateEntry] %s (%s): ✓ SIGNAL - BUY (extreme high: >= %.4f), size: %.0f shares ($%.2f), market exposure: $%.2f/$%.2f", 
-				marketID, outcome, les.extremeConfidence, positionSize, positionSize*book.BestAskParsed, les.marketExposure[marketID]+positionSize*book.BestAskParsed, maxPosSize*les.maxMarketExposure)
 			if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
 					return &TradeSignal{
@@ -377,16 +376,13 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		if inFinalMinute && highConfBuyMet && !veryHighConfBuyMet && minSizeForConservativeBuy {
 			// HARD MINIMUM: Verify actual share price is above $0.85 before placing order
 			if book.BestAskParsed < 0.85 {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 1 CANCELLED - Share price $%.4f below hard minimum $0.85", marketID, outcome, book.BestAskParsed)
 				continue
 			}
 			
 			// Calculate safe position size respecting per-market cap
-			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 0.25) // 25% of tier
+			_, _, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 0.25) // 25% of tier
 			
 			if !withinCap {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 1 REJECTED - Would exceed 30%% per-market cap (current: $%.2f, max: $%.2f, remaining: $%.2f)", 
-					marketID, outcome, les.marketExposure[marketID], maxPosSize*les.maxMarketExposure, marketRemaining)
 				continue
 			}
 			
@@ -395,10 +391,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 				math.Min((maxPosSize * 0.25) / book.BestAskParsed, book.BestAskSizeParsed*0.15),
 				recommendedSize / book.BestAskParsed, // Cap by safe position size in USDC
 			)
-			log.Printf("[LateEntry] %s (%s): ✓ SIGNAL - BUY TIER 1 (high conf: in [0.85-0.94]), size: %.0f shares ($%.2f), market exposure: $%.2f/$%.2f", 
-				marketID, outcome, positionSize, positionSize*book.BestAskParsed, les.marketExposure[marketID]+positionSize*book.BestAskParsed, maxPosSize*les.maxMarketExposure)
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
+				les.dashboard.RecordTrade("BUY", marketID, book.BestAskParsed, positionSize)
 				return &TradeSignal{
 					ShouldTrade:        true,
 					MarketID:           marketID,
@@ -416,16 +411,13 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 		if inFinalMinute && veryHighConfBuyMet && minSizeForStandardBuy {
 			// HARD MINIMUM: Verify actual share price is above $0.85 before placing order
 			if book.BestAskParsed < 0.85 {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 2 CANCELLED - Share price $%.4f below hard minimum $0.85", marketID, outcome, book.BestAskParsed)
 				continue
 			}
 			
 			// Calculate safe position size respecting per-market cap
-			_, marketRemaining, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 0.35) // 35% of tier
+			_, _, recommendedSize, withinCap := les.calculateSafePositionSize(marketID, marketID, 0.35) // 35% of tier
 			
 			if !withinCap {
-				log.Printf("[LateEntry] %s (%s): ✗ BUY TIER 2 REJECTED - Would exceed 30%% per-market cap (current: $%.2f, max: $%.2f, remaining: $%.2f)", 
-					marketID, outcome, les.marketExposure[marketID], maxPosSize*les.maxMarketExposure, marketRemaining)
 				continue
 			}
 			
@@ -434,10 +426,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 				math.Min((maxPosSize * 0.35) / book.BestAskParsed, book.BestAskSizeParsed*0.25),
 				recommendedSize / book.BestAskParsed, // Cap by safe position size in USDC
 			)
-			log.Printf("[LateEntry] %s (%s): ✓ SIGNAL - BUY TIER 2 (prefer high: >= 0.95), size: %.0f shares ($%.2f), market exposure: $%.2f/$%.2f", 
-				marketID, outcome, positionSize, positionSize*book.BestAskParsed, les.marketExposure[marketID]+positionSize*book.BestAskParsed, maxPosSize*les.maxMarketExposure)
 			if positionSize > 0.5 {
 				les.lastTradeTime = time.Now()
+				les.dashboard.RecordTrade("BUY", marketID, book.BestAskParsed, positionSize)
 				return &TradeSignal{
 					ShouldTrade:        true,
 					MarketID:           marketID,
@@ -464,10 +455,9 @@ func (les *LateEntryStrategy) EvaluateV2(markets map[string]*polymarket.MarketBo
 					positionSize = ownedShares
 				}
 				
-				log.Printf("[LateEntry] %s (%s): ✓ SIGNAL - LOSS EXIT SELL (price dropped below 0.70), size: %.0f (own: %.0f)", 
-					marketID, outcome, positionSize, ownedShares)
 				if positionSize > 0.5 {
 					les.lastTradeTime = time.Now()
+					les.dashboard.RecordTrade("SELL", marketID, book.BestBidParsed, positionSize)
 					return &TradeSignal{
 						ShouldTrade:        true,
 						MarketID:           marketID,
@@ -495,8 +485,7 @@ func (les *LateEntryStrategy) OnOrderPlaced(marketID string, side string, price 
 		// Track market exposure (in USDC spent)
 		costBasis := price * size
 		les.marketExposure[marketID] += costBasis
-		log.Printf("[LateEntry] %s: Inventory updated - BUY +%.0f shares (total: %.0f), Market exposure: $%.2f", 
-			marketID, size, les.ownedInventory[marketID], les.marketExposure[marketID])
+		les.dashboard.UpdatePosition(marketID, les.ownedInventory[marketID], les.marketExposure[marketID])
 	} else if side == "SELL" {
 		// Subtract from inventory when we SELL
 		les.ownedInventory[marketID] -= size
@@ -509,8 +498,7 @@ func (les *LateEntryStrategy) OnOrderPlaced(marketID string, side string, price 
 		if les.marketExposure[marketID] < 0 {
 			les.marketExposure[marketID] = 0 // Prevent negative exposure
 		}
-		log.Printf("[LateEntry] %s: Inventory updated - SELL -%.0f shares (total: %.0f), Market exposure: $%.2f", 
-			marketID, size, les.ownedInventory[marketID], les.marketExposure[marketID])
+		les.dashboard.UpdatePosition(marketID, les.ownedInventory[marketID], les.marketExposure[marketID])
 	}
 }
 
@@ -529,20 +517,13 @@ func (les *LateEntryStrategy) OnMarketWindowChange() {
 	if les.lossTracker != nil {
 		go func() {
 			// Step 1: Get queued markets from previous window and check for losses
-			queuedMarkets := les.lossTracker.GetQueuedMarkets()
-			if len(queuedMarkets) > 0 {
-				log.Printf("[LateEntry] Checking losses for %d queued markets from previous window", len(queuedMarkets))
-				newLosses, err := les.lossTracker.CheckForNewLosses()
-				if err != nil {
-					log.Printf("[LateEntry] Error checking for losses: %v", err)
-				} else if newLosses {
-					// Log active cooldowns
-					cooldowns := les.lossTracker.GetActiveCooldowns()
-					for title, cd := range cooldowns {
-						remaining := cd.CooldownEndTime.Sub(time.Now())
-						log.Printf("[LateEntry] Active cooldown for %s: %.2fx risk multiplier, expires in %.0f minutes", 
-							title, cd.RiskMultiplier, remaining.Minutes())
-					}
+			_, err := les.lossTracker.CheckForNewLosses()
+			if err == nil {
+				// Update dashboard with active cooldowns
+				cooldowns := les.lossTracker.GetActiveCooldowns()
+				for title, cd := range cooldowns {
+					remaining := cd.CooldownEndTime.Sub(time.Now())
+					les.dashboard.SetActiveCooldown(title, cd.RiskMultiplier, remaining)
 				}
 			}
 			

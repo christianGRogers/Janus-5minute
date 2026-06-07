@@ -99,6 +99,12 @@ func main() {
 	}
 	log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
 
+	// Create and initialize dashboard
+	dashboard := analytics.NewDashboard(tradingEngine.GetBalance())
+	if strategyWithDashboard, ok := strategy.(interface{ SetDashboard(*analytics.Dashboard) }); ok {
+		strategyWithDashboard.SetDashboard(dashboard)
+	}
+
 	// Create market logger for analytics
 	marketLogger, err := analytics.NewMarketLogger(".")
 	if err != nil {
@@ -204,6 +210,32 @@ func main() {
 			return
 
 		case <-ticker.C:
+			// Update dashboard with current balance and risk state
+			if dashboard != nil && tradingEngine != nil {
+				dashboard.SetBalance(tradingEngine.GetBalance())
+				
+				// Update risk state on the dashboard
+				if strategyWithRisk, ok := strategy.(interface{ UpdateDashboardRiskState() }); ok {
+					strategyWithRisk.UpdateDashboardRiskState()
+				}
+				
+				// Update market data in dashboard
+				books := fetcher.GetAllLatestBooks()
+				for cacheKey, book := range books {
+					if book != nil {
+						midPrice := (book.BestBidParsed + book.BestAskParsed) / 2
+						var spread float64
+						if midPrice > 0 {
+							spread = ((book.BestAskParsed - book.BestBidParsed) / midPrice) * 100
+						}
+						dashboard.UpdateMarketData(cacheKey, book.BestBidParsed, book.BestBidSizeParsed, 
+							book.BestAskParsed, book.BestAskSizeParsed, book.LiquidityParsed, spread)
+					}
+				}
+				
+				dashboard.Render()
+			}
+
 			// Report discovered markets on first iteration
 			if !discoveryReported {
 				discoveredMarkets := fetcher.GetDiscoveredMarkets()
@@ -216,21 +248,8 @@ func main() {
 				}
 			}
 
-			// Print current market data
+			// Get market books
 			books := fetcher.GetAllLatestBooks()
-			if len(books) > 0 {
-				fmt.Printf("\n=== Market Data at %s ===\n", time.Now().Format("15:04:05"))
-
-				for cacheKey, book := range books {
-					if book != nil {
-						fmt.Printf("Market: %s\n", cacheKey)
-						fmt.Printf("  Best Bid: %.2f (size: %.2f)\n", book.BestBidParsed, book.BestBidSizeParsed)
-						fmt.Printf("  Best Ask: %.2f (size: %.2f)\n", book.BestAskParsed, book.BestAskSizeParsed)
-						fmt.Printf("  Total Liquidity: %.2f USDC\n", book.LiquidityParsed)
-						fmt.Printf("  Spread: %.2f%%\n", ((book.BestAskParsed - book.BestBidParsed) / ((book.BestAskParsed + book.BestBidParsed) / 2)) * 100)
-					}
-				}
-			}
 
 			// Run strategy evaluation if enabled
 			if strategy != nil && len(books) > 0 {
@@ -242,37 +261,6 @@ func main() {
 						log.Printf("❌ Strategy order failed: %v", err)
 					} else {
 						log.Printf("✅ %s Strategy placed %s order: %s @ %.2f x %.0f shares (%s)", strategy.Name(), signal.Side, orderID, signal.Price, signal.Size, signal.Outcome)
-					}
-				}
-			}
-
-			// Show paper trading
-			if tradingEngine != nil {
-				fmt.Printf("\nPaper Trading Account:\n")
-				startingBalance := tradingEngine.GetStartingBalance()
-				currentBalance := tradingEngine.GetBalance()
-				profit := currentBalance - startingBalance
-				profitPercentage := 0.0
-				if startingBalance > 0 {
-					profitPercentage = (profit / startingBalance) * 100
-				}
-				
-				fmt.Printf("  Starting Balance: %.2f USDC\n", startingBalance)
-				fmt.Printf("  Current Balance: %.2f USDC\n", currentBalance)
-				
-				profitStatus := "📈"
-				if profit < 0 {
-					profitStatus = "📉"
-				}
-				fmt.Printf("  %s Profit/Loss: %.2f USDC (%.1f%%)\n", profitStatus, profit, profitPercentage)
-				
-				positions := tradingEngine.GetPositions()
-				if len(positions) == 0 {
-					fmt.Printf("  Positions: None\n")
-				} else {
-					fmt.Printf("  Positions:\n")
-					for marketID, pos := range positions {
-						fmt.Printf("    %s (%s): %s %.2f @ %.4f\n", marketID, pos.Direction, pos.Side, pos.Size, pos.AvgPrice)
 					}
 				}
 			}
