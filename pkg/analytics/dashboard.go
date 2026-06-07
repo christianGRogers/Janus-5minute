@@ -174,7 +174,9 @@ func (d *Dashboard) RecordTrade(side, marketID string, price, size float64) {
 func (d *Dashboard) UpdateMarketData(marketID string, bidPrice, bidSize, askPrice, askSize, liquidity, spread float64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+	if len(d.currentMarkets) >= 2{
+		d.currentMarkets = make(map[string]MarketInfo) // Clear current markets before updating
+	}
 	d.currentMarkets[marketID] = MarketInfo{
 		MarketID:  marketID,
 		BidPrice:  bidPrice,
