@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"bytes"
 )
 
 // PaperTradingRealisticConfig controls realism features for paper trading simulations
@@ -146,6 +147,10 @@ func LoadRiskScores() error {
 	for _, path := range possiblePaths {
 		data, err := os.ReadFile(path)
 		if err == nil {
+			// Strip UTF-8 BOM if present (0xEF 0xBB 0xBF)
+			// Windows editors sometimes save files with a BOM prefix which breaks json.Unmarshal
+			data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+
 			err = json.Unmarshal(data, &config)
 			if err == nil {
 				GlobalRiskScores = config
@@ -185,29 +190,26 @@ func GetRiskScoreForHour(hour int) float64 {
 // GetRiskScoreForFiveMinuteInterval returns the risk score (0-1) for a 5-minute interval (HH:MM format)
 // Uses polynomial interpolation if available, otherwise falls back to hourly score or defaults to 1.0
 func GetRiskScoreForFiveMinuteInterval(hour int, minute int) float64 {
-	if !riskScoresLoaded {
-		log.Printf("[Risk Config] WARNING: Risk scores not loaded! Call LoadRiskScores() at startup")
-		return 0.5
-	}
+	// if !riskScoresLoaded {
+	// 	log.Printf("[Risk Config] WARNING: Risk scores not loaded! Call LoadRiskScores() at startup")
+	// 	return 0.5
+	// }
 
 	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
 		log.Printf("[Risk Config] Invalid time: %02d:%02d", hour, minute)
 		return 0.5
 	}
 
-	// Try to get from pre-computed 5-minute intervals first
-	intervalStr := fmt.Sprintf("%02d:%02d", hour, minute)
-	if score, exists := GlobalRiskScores.FiveMinuteIntervals[intervalStr]; exists {
-		return score
-	}
-
-	// Fall back to polynomial evaluation if available
-	if GlobalRiskScores.PolynomialCoefficients != nil {
-		return evaluatePolynomialRiskScore(hour, minute, GlobalRiskScores.PolynomialCoefficients)
-	}
+	// // Try to get from pre-computed 5-minute intervals first
+	// intervalStr := fmt.Sprintf("%02d:%02d", hour, minute)
+	// if score, exists := GlobalRiskScores.FiveMinuteIntervals[intervalStr]; exists {
+	// 	return score
+	// }
+	log.Printf("RISK SCORE=%.4f for time %02d:%02d", evaluatePolynomialRiskScore(hour, minute, GlobalRiskScores.PolynomialCoefficients), hour, minute)
+	return evaluatePolynomialRiskScore(hour, minute, GlobalRiskScores.PolynomialCoefficients)
 
 	// Fall back to hourly score
-	return GetRiskScoreForHour(hour)
+	//return GetRiskScoreForHour(hour)
 }
 
 // evaluatePolynomialRiskScore evaluates the polynomial risk function at a given time
