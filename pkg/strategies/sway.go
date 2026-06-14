@@ -104,7 +104,7 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		scriptPath = "sway_model/sway_predict.py"
 	}
 
-	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=65%% | stopLoss=$%.2f/share",
+	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=85%% | stopLoss=$%.2f/share",
 		pythonBin, scriptPath, stopLossOffset)
 
 	s := &SwayStrategy{
@@ -118,7 +118,7 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		positionEntryPrice: make(map[string]float64),
 		pendingOutcome:     make(map[string]string),
 		maxMarketExposure:  0.35,
-		minConfidence:      0.65,
+		minConfidence:      0.85,
 		pythonBin:          pythonBin,
 		modelScriptPath:    scriptPath,
 	}
@@ -312,6 +312,12 @@ func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, no
 			continue
 		}
 		if pred.Outcome != outcome || pred.Confidence < ss.minConfidence {
+			continue
+		}
+
+		// If the market itself is pricing this outcome below $0.70, require very
+		// high confidence (>95%) — the market is signalling doubt and we should too.
+		if book.BestAskParsed < 0.70 && pred.Confidence <= 0.95 {
 			continue
 		}
 
