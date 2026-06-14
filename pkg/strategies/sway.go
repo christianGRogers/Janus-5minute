@@ -17,12 +17,14 @@ import (
 	"janus-bot/pkg/trading"
 )
 
-
 // swayPredictionSlots are the seconds-remaining values at which we run the model.
 var swayPredictionSlots = []int{60, 30, 20, 15, 10}
 
 // swayPredictionTolerance is how many seconds off the slot we still fire (±).
 const swayPredictionTolerance = 3
+
+// stopLossOffset is the per-share price drop that triggers an exit.
+const stopLossOffset = 0.20
 
 // SwayPrediction holds one model inference result.
 type SwayPrediction struct {
@@ -46,11 +48,10 @@ type priceTick struct {
 //  1. Records the current UP-outcome mid-price for each live market.
 //  2. At key remaining-time slots (60s, 30s, 20s, 15s, 10s), fires an async
 //     Python inference call that writes a SwayPrediction for the market.
-//  3. Once a prediction exists with confidence ≥ minConfidence, returns a BUY
-//     signal on the predicted outcome.
-//
-// Model output (outcome + confidence) is logged on every prediction and on every
-// trade signal so it is always visible in the bot logs.
+//  3. Checks open positions for two exit conditions (highest priority):
+//     a. Stop-loss: best bid ≤ entry price − $0.20/share → sell all at best bid.
+//     b. Outcome flip: fresh prediction now opposes the held outcome → sell all at best bid.
+//  4. If no exit is needed, checks whether to open a new BUY position.
 type SwayStrategy struct {
 	*BaseStrategy
 
@@ -66,12 +67,18 @@ type SwayStrategy struct {
 	predictedSlots map[string]map[int]bool
 
 	// Inventory and exposure tracking.
-	ownedInventory    map[string]float64
-	marketExposure    map[string]float64
-	maxMarketExposure float64 // fraction of balance; default 0.35
+	ownedInventory map[string]float64
+	marketExposure map[string]float64
 
-	// Minimum model confidence required to trade.
-	minConfidence float64
+	// Position details needed for sell logic.
+	positionOutcome    map[string]string  // marketID → "UP" or "DOWN"
+	positionEntryPrice map[string]float64 // marketID → weighted-average entry price per share
+
+	// pendingOutcome bridges EvaluateV2 (knows outcome) → OnOrderPlaced (doesn't).
+	pendingOutcome map[string]string
+
+	maxMarketExposure float64 // fraction of balance; default 0.35
+	minConfidence     float64 // minimum model confidence required to trade
 
 	// Python invocation.
 	pythonBin       string
@@ -97,19 +104,23 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		scriptPath = "sway_model/sway_predict.py"
 	}
 
-	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=55%%", pythonBin, scriptPath)
+	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=55%% | stopLoss=$%.2f/share",
+		pythonBin, scriptPath, stopLossOffset)
 
 	s := &SwayStrategy{
-		BaseStrategy:      NewBaseStrategy(engine),
-		priceHistory:      make(map[string][]priceTick),
-		predictions:       make(map[string]*SwayPrediction),
-		predictedSlots:    make(map[string]map[int]bool),
-		ownedInventory:    make(map[string]float64),
-		marketExposure:    make(map[string]float64),
-		maxMarketExposure: 0.35,
-		minConfidence:     0.55,
-		pythonBin:         pythonBin,
-		modelScriptPath:   scriptPath,
+		BaseStrategy:       NewBaseStrategy(engine),
+		priceHistory:       make(map[string][]priceTick),
+		predictions:        make(map[string]*SwayPrediction),
+		predictedSlots:     make(map[string]map[int]bool),
+		ownedInventory:     make(map[string]float64),
+		marketExposure:     make(map[string]float64),
+		positionOutcome:    make(map[string]string),
+		positionEntryPrice: make(map[string]float64),
+		pendingOutcome:     make(map[string]string),
+		maxMarketExposure:  0.35,
+		minConfidence:      0.55,
+		pythonBin:          pythonBin,
+		modelScriptPath:    scriptPath,
 	}
 	s.Config.RiskTolerance = 0.20
 	return s
@@ -131,12 +142,11 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 			continue
 		}
 
-		// Only the UP outcome carries the directional price signal.
 		if !strings.HasSuffix(cacheKey, "-UP") {
 			continue
 		}
 
-		marketID := cacheKey[:len(cacheKey)-3] // strip "-UP"
+		marketID := cacheKey[:len(cacheKey)-3]
 		marketStart, ok := swayParseMarketStart(marketID)
 		if !ok {
 			continue
@@ -152,7 +162,6 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 			continue
 		}
 
-		// Record tick.
 		ss.historyMu.Lock()
 		ss.priceHistory[marketID] = append(ss.priceHistory[marketID], priceTick{
 			UnixTime: now.Unix(),
@@ -160,7 +169,6 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 		})
 		ss.historyMu.Unlock()
 
-		// Fire prediction at each key remaining-time slot (once per slot).
 		for _, slot := range swayPredictionSlots {
 			if swayAbsInt(secondsRemaining-slot) <= swayPredictionTolerance {
 				ss.predMu.Lock()
@@ -180,19 +188,97 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 		}
 	}
 
-	// ── Phase 2: trading decision (only in final 65 s) ───────────────────────
+	// ── Phase 2: sell checks — run regardless of time remaining ──────────────
+	//
+	// We always want to be able to exit a bad position even outside the 65s window,
+	// so sell checks run before the time gate.
+	if sig := ss.checkExits(markets, now); sig != nil {
+		return sig
+	}
+
+	// ── Phase 3: buy — only in final 65 s ────────────────────────────────────
 	if secondsRemaining > 65 {
 		return &TradeSignal{ShouldTrade: false}
 	}
 
+	return ss.checkEntry(markets, now)
+}
+
+// checkExits scans open positions for stop-loss and outcome-flip conditions.
+// Stop-loss takes priority over outcome flip.
+func (ss *SwayStrategy) checkExits(markets map[string]*polymarket.MarketBook, now time.Time) *TradeSignal {
+	for marketID, shares := range ss.ownedInventory {
+		if shares < 0.5 {
+			continue
+		}
+
+		heldOutcome := ss.positionOutcome[marketID]
+		if heldOutcome == "" {
+			continue
+		}
+
+		entryPrice := ss.positionEntryPrice[marketID]
+		stopPrice := entryPrice - stopLossOffset
+
+		// Get the live book for the outcome we're holding.
+		book := markets[marketID+"-"+heldOutcome]
+		if book == nil || book.BestBidParsed == 0 {
+			continue
+		}
+
+		stopTriggered := book.BestBidParsed <= stopPrice
+
+		// Outcome flip: fresh prediction (≤35s old, conf ≥ threshold) disagrees.
+		flipTriggered := false
+		ss.predMu.Lock()
+		pred := ss.predictions[marketID]
+		ss.predMu.Unlock()
+		if pred != nil && pred.FeaturesOK &&
+			pred.Outcome != heldOutcome &&
+			pred.Confidence >= ss.minConfidence &&
+			now.Sub(pred.Timestamp) <= 35*time.Second {
+			flipTriggered = true
+		}
+
+		if !stopTriggered && !flipTriggered {
+			continue
+		}
+
+		reason := "outcome_flip"
+		if stopTriggered {
+			reason = "stop_loss"
+		}
+
+		// Sell as many shares as the best bid can absorb this tick.
+		sellShares := math.Min(shares, book.BestBidSizeParsed*0.90)
+		if sellShares < 0.5 {
+			sellShares = shares // try anyway if liquidity is very low
+		}
+
+		log.Printf("[Sway] SELL | reason=%s | market=%s | held=%s | shares=%.1f | bid=%.4f | entry=%.4f | stopAt=%.4f",
+			reason, marketID, heldOutcome, sellShares, book.BestBidParsed, entryPrice, stopPrice)
+
+		return &TradeSignal{
+			ShouldTrade:        true,
+			MarketID:           marketID,
+			Side:               "SELL",
+			Price:              book.BestBidParsed,
+			Size:               sellShares,
+			AvailableLiquidity: book.BestBidSizeParsed,
+			Outcome:            heldOutcome,
+		}
+	}
+	return nil
+}
+
+// checkEntry looks for a BUY opportunity based on the latest model prediction.
+func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, now time.Time) *TradeSignal {
 	for cacheKey, book := range markets {
 		if book == nil || book.BestAskParsed == 0 {
 			continue
 		}
 
-		var outcome string
-		var marketID string
-
+		var outcome, marketID string
 		switch {
 		case strings.HasSuffix(cacheKey, "-UP"):
 			outcome = "UP"
@@ -215,18 +301,18 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 		if pred == nil || !pred.FeaturesOK {
 			continue
 		}
-
-		// Discard stale predictions (older than 35 s).
 		if now.Sub(pred.Timestamp) > 35*time.Second {
 			continue
 		}
-
-		// Trade only when the model agrees with this outcome and confidence is sufficient.
 		if pred.Outcome != outcome || pred.Confidence < ss.minConfidence {
 			continue
 		}
 
-		// Per-market exposure cap.
+		// Don't add to a position that's already on the opposite outcome.
+		if existing := ss.positionOutcome[marketID]; existing != "" && existing != outcome {
+			continue
+		}
+
 		balance := ss.Engine.GetBalance()
 		currentExposure := ss.marketExposure[marketID]
 		maxExposure := balance * ss.maxMarketExposure
@@ -234,7 +320,7 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 			continue
 		}
 
-		// Scale position size by confidence above threshold.
+		// Scale position by confidence above threshold: 0.5× at min conf → 1.0× at 100%.
 		baseUSDC := ss.GetDynamicPositionSize()
 		confScale := math.Min(1.0, (pred.Confidence-ss.minConfidence)/(1.0-ss.minConfidence)+0.5)
 		positionUSDC := math.Min(baseUSDC*confScale, maxExposure-currentExposure)
@@ -243,16 +329,16 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 		if positionShares < 0.5 {
 			continue
 		}
-
-		// Don't consume more than 75 % of the available liquidity at the ask.
 		positionShares = math.Min(positionShares, book.BestAskSizeParsed*0.75)
 		if positionShares < 0.5 {
 			continue
 		}
 
-		log.Printf("[Sway] TRADE SIGNAL | market=%s | predicted=%s | confidence=%.1f%% | raw=%.4f | side=BUY %s | price=%.4f | shares=%.1f | predAt=%ds remaining",
-			marketID, pred.Outcome, pred.Confidence*100, pred.RawPrediction,
-			outcome, book.BestAskParsed, positionShares, pred.RemainingAtPred)
+		log.Printf("[Sway] BUY | market=%s | outcome=%s | conf=%.1f%% | raw=%.4f | price=%.4f | shares=%.1f | stopLoss=%.4f | predAt=%ds",
+			marketID, outcome, pred.Confidence*100, pred.RawPrediction,
+			book.BestAskParsed, positionShares, book.BestAskParsed-stopLossOffset, pred.RemainingAtPred)
+
+		ss.pendingOutcome[marketID] = outcome
 
 		return &TradeSignal{
 			ShouldTrade:        true,
@@ -264,12 +350,11 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 			Outcome:            outcome,
 		}
 	}
-
 	return &TradeSignal{ShouldTrade: false}
 }
 
 // runPrediction copies the current price history, calls the Python model, and
-// stores the result.  Runs in a goroutine — never blocks EvaluateV2.
+// stores the result. Runs in a goroutine — never blocks EvaluateV2.
 func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapsed int, remaining int) {
 	ss.historyMu.Lock()
 	src := ss.priceHistory[marketID]
@@ -283,7 +368,6 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		return
 	}
 
-	// Build JSON payload for sway_predict.py.
 	times := make([]float64, len(history))
 	prices := make([]float64, len(history))
 	for i, t := range history {
@@ -319,7 +403,7 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		RawPrediction float64            `json:"raw_prediction"`
 		FeaturesOK    bool               `json:"features_computed"`
 		Error         string             `json:"error"`
-		SwayValues    map[string]float64 `json:"sway_values"`     // "sway_10s" → float
+		SwayValues    map[string]float64 `json:"sway_values"`
 		SwayAgreement float64            `json:"sway_agreement"`
 		SwayMagnitude float64            `json:"sway_magnitude"`
 		ShortLongDiv  float64            `json:"short_long_div"`
@@ -334,7 +418,6 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		log.Printf("[Sway] Inference error for %s at %ds remaining: %s", marketID, remaining, result.Error)
 	}
 
-	// Convert string-keyed sway map → int-keyed
 	swayByWindow := make(map[int]float64)
 	windowKeys := map[string]int{"sway_10s": 10, "sway_15s": 15, "sway_20s": 20, "sway_30s": 30, "sway_60s": 60}
 	for k, v := range result.SwayValues {
@@ -361,7 +444,6 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 	log.Printf("[Sway] PREDICTION | market=%s | %ds remaining | outcome=%s | confidence=%.1f%% | raw=%.4f | features=%v",
 		marketID, remaining, pred.Outcome, pred.Confidence*100, pred.RawPrediction, pred.FeaturesOK)
 
-	// Push to dashboard so the sway section always reflects the latest inference.
 	if ss.dashboard != nil {
 		ss.dashboard.SetSwayState(&analytics.SwayModelState{
 			MarketID:        marketID,
@@ -379,24 +461,44 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 	}
 }
 
-// OnOrderPlaced updates the inventory and exposure state after an order executes.
+// OnOrderPlaced updates inventory and position tracking after an order executes.
 func (ss *SwayStrategy) OnOrderPlaced(marketID string, side string, price float64, size float64) {
 	cost := price * size
 	if side == "BUY" {
-		ss.ownedInventory[marketID] += size
+		// Weighted-average entry price across multiple fills.
+		prevShares := ss.ownedInventory[marketID]
+		newShares := prevShares + size
+		if newShares > 0 {
+			ss.positionEntryPrice[marketID] = (ss.positionEntryPrice[marketID]*prevShares + price*size) / newShares
+		}
+		ss.ownedInventory[marketID] = newShares
 		ss.marketExposure[marketID] += cost
+
+		// Capture which outcome this buy was for.
+		if outcome, ok := ss.pendingOutcome[marketID]; ok {
+			ss.positionOutcome[marketID] = outcome
+			delete(ss.pendingOutcome, marketID)
+		}
+
+		stopAt := ss.positionEntryPrice[marketID] - stopLossOffset
+		log.Printf("[Sway] Order recorded | market=%s | BUY %.1f @ %.4f | avgEntry=%.4f | stopLoss=%.4f | exposure=$%.2f",
+			marketID, size, price, ss.positionEntryPrice[marketID], stopAt, ss.marketExposure[marketID])
+
 	} else if side == "SELL" {
 		ss.ownedInventory[marketID] -= size
-		if ss.ownedInventory[marketID] < 0 {
+		if ss.ownedInventory[marketID] < 0.5 {
 			ss.ownedInventory[marketID] = 0
+			// Clear position metadata when fully exited.
+			delete(ss.positionOutcome, marketID)
+			delete(ss.positionEntryPrice, marketID)
 		}
 		ss.marketExposure[marketID] -= cost
 		if ss.marketExposure[marketID] < 0 {
 			ss.marketExposure[marketID] = 0
 		}
+		log.Printf("[Sway] Order recorded | market=%s | SELL %.1f @ %.4f | remaining=%.1f shares | exposure=$%.2f",
+			marketID, size, price, ss.ownedInventory[marketID], ss.marketExposure[marketID])
 	}
-	log.Printf("[Sway] Order recorded | market=%s | %s %.1f @ %.4f | exposure=$%.2f",
-		marketID, side, size, price, ss.marketExposure[marketID])
 }
 
 // OnMarketWindowChange resets all per-window state when the 5-min window rolls over.
@@ -412,6 +514,9 @@ func (ss *SwayStrategy) OnMarketWindowChange() {
 
 	ss.ownedInventory = make(map[string]float64)
 	ss.marketExposure = make(map[string]float64)
+	ss.positionOutcome = make(map[string]string)
+	ss.positionEntryPrice = make(map[string]float64)
+	ss.pendingOutcome = make(map[string]string)
 
 	log.Printf("[Sway] Market window rolled over — all state reset")
 }
@@ -423,8 +528,6 @@ func (ss *SwayStrategy) Reset() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// swayParseMarketStart extracts the Unix timestamp embedded in a market slug
-// like "btc-updown-5m-1779480300".
 func swayParseMarketStart(slug string) (int64, bool) {
 	parts := strings.Split(slug, "-")
 	if len(parts) == 0 {
