@@ -104,7 +104,7 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		scriptPath = "sway_model/sway_predict.py"
 	}
 
-	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=55%% | stopLoss=$%.2f/share",
+	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=65%% | stopLoss=$%.2f/share",
 		pythonBin, scriptPath, stopLossOffset)
 
 	s := &SwayStrategy{
@@ -117,12 +117,12 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		positionOutcome:    make(map[string]string),
 		positionEntryPrice: make(map[string]float64),
 		pendingOutcome:     make(map[string]string),
-		maxMarketExposure:  0.35,
-		minConfidence:      0.55,
+		maxMarketExposure:  0.20,
+		minConfidence:      0.65,
 		pythonBin:          pythonBin,
 		modelScriptPath:    scriptPath,
 	}
-	s.Config.RiskTolerance = 0.20
+	s.Config.RiskTolerance = 0.10
 	return s
 }
 
@@ -290,10 +290,6 @@ func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, no
 			continue
 		}
 
-		if book.LiquidityParsed < ss.Config.MinLiquidityUSDC {
-			continue
-		}
-
 		ss.predMu.Lock()
 		pred := ss.predictions[marketID]
 		ss.predMu.Unlock()
@@ -302,6 +298,11 @@ func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, no
 			continue
 		}
 		if now.Sub(pred.Timestamp) > 35*time.Second {
+			continue
+		}
+		// Only trade on predictions made at ≤30s remaining — the 60s prediction
+		// has the least market data and is the least reliable.
+		if pred.RemainingAtPred > 30 {
 			continue
 		}
 		if pred.Outcome != outcome || pred.Confidence < ss.minConfidence {
