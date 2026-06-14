@@ -117,12 +117,12 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		positionOutcome:    make(map[string]string),
 		positionEntryPrice: make(map[string]float64),
 		pendingOutcome:     make(map[string]string),
-		maxMarketExposure:  0.20,
+		maxMarketExposure:  0.35,
 		minConfidence:      0.65,
 		pythonBin:          pythonBin,
 		modelScriptPath:    scriptPath,
 	}
-	s.Config.RiskTolerance = 0.10
+	s.Config.RiskTolerance = 0.20
 	return s
 }
 
