@@ -7,13 +7,30 @@ import (
 	"time"
 )
 
+// SwayModelState holds the latest sway model prediction and input features for display.
+type SwayModelState struct {
+	MarketID        string
+	Outcome         string  // "UP" or "DOWN"
+	Confidence      float64 // 0.0 – 1.0
+	RawPrediction   float64
+	FeaturesOK      bool
+	RemainingAtPred int // seconds remaining when inference ran
+	PredictedAt     time.Time
+
+	// Per-window sway_last values (directional momentum, keyed by window seconds)
+	SwayValues    map[int]float64 // e.g. {10: 0.084, 15: 0.062, 20: 0.051, 30: 0.031, 60: 0.015}
+	SwayAgreement float64
+	SwayMagnitude float64
+	ShortLongDiv  float64
+}
+
 // Dashboard provides minimal, static terminal output that doesn't scroll visually
 // All information is displayed in a locked dashboard format that updates in-place
 type Dashboard struct {
 	mu                    sync.Mutex
 	lastUpdateTime        time.Time
 	updateFrequencyMs     int
-	
+
 	// Current state
 	currentTime           time.Time
 	riskScore             float64
@@ -21,29 +38,32 @@ type Dashboard struct {
 	riskMultiplier        float64
 	lossMultiplier        float64
 	combinedMultiplier    float64
-	
+
 	// Market positions
 	positions             map[string]PositionInfo // marketID -> position
-	
+
 	// Account info
 	balance               float64
 	initialBalance        float64
 	totalProfit           float64
 	totalLoss             float64
 	netPnL                float64
-	
+
 	// Loss cooldown
 	activeCooldowns       map[string]CooldownInfo // marketID -> cooldown
-	
+
 	// Trading activity (last trade only)
 	lastTradeSide         string
 	lastTradeMarket       string
 	lastTradePrice        float64
 	lastTradeSize         float64
 	lastTradeTime         time.Time
-	
+
 	// Current market info
 	currentMarkets        map[string]MarketInfo // marketID -> current market data
+
+	// Sway model state (latest prediction + features)
+	swayState             *SwayModelState
 }
 
 // MarketInfo holds current market book data
@@ -188,6 +208,13 @@ func (d *Dashboard) UpdateMarketData(marketID string, bidPrice, bidSize, askPric
 	}
 }
 
+// SetSwayState updates the displayed sway model prediction and input features.
+func (d *Dashboard) SetSwayState(state *SwayModelState) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.swayState = state
+}
+
 // Render outputs the dashboard to the terminal (static format that updates in place)
 // Uses ANSI codes to clear lines and reposition cursor
 func (d *Dashboard) Render() {
@@ -266,7 +293,46 @@ func (d *Dashboard) Render() {
 	} else {
 		fmt.Printf("\n🔄 LAST TRADE: None\n")
 	}
-	
+
+	// ============ SWAY MODEL SECTION ============
+	fmt.Printf("\n🧠 SWAY MODEL:\n")
+	if d.swayState != nil && d.swayState.FeaturesOK {
+		s := d.swayState
+		age := time.Since(s.PredictedAt).Seconds()
+
+		// Confidence bar (20 chars wide)
+		filled := int(s.Confidence * 20)
+		bar := ""
+		for i := 0; i < 20; i++ {
+			if i < filled {
+				bar += "█"
+			} else {
+				bar += "░"
+			}
+		}
+
+		fmt.Printf("   Market:     %s\n", s.MarketID)
+		fmt.Printf("   Prediction: %-4s  Raw: %.4f  Conf: %.1f%%  [%s]\n",
+			s.Outcome, s.RawPrediction, s.Confidence*100, bar)
+		fmt.Printf("   Predicted at %ds remaining  (%.0fs ago)\n", s.RemainingAtPred, age)
+		fmt.Printf("   Sway signals (last value per window):\n")
+		for _, w := range []int{10, 15, 20, 30, 60} {
+			v := s.SwayValues[w]
+			dir := "+"
+			if v < 0 {
+				dir = ""
+			}
+			fmt.Printf("     %3ds: %s%.4f", w, dir, v)
+		}
+		fmt.Printf("\n")
+		fmt.Printf("   Agreement: %+.3f  |  Magnitude: %.4f  |  S-L Div: %+.4f\n",
+			s.SwayAgreement, s.SwayMagnitude, s.ShortLongDiv)
+	} else if d.swayState != nil && !d.swayState.FeaturesOK {
+		fmt.Printf("   Waiting for sufficient price history...\n")
+	} else {
+		fmt.Printf("   No prediction yet (fires at 60s, 30s, 20s, 15s, 10s remaining)\n")
+	}
+
 	fmt.Printf("\n────────────────────────────────────────────────────────────────\n\n")
 }
 

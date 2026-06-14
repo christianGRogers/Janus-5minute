@@ -77,7 +77,7 @@ func main() {
 	var strategy strategies.Strategy
 	strategyName := os.Getenv("STRATEGY")
 	if strategyName == "" {
-		strategyName = "LateEntry" // Default strategy
+		strategyName = "Sway" // Default strategy
 	}
 
 	// Load pre-trained risk scores from static configuration
@@ -93,9 +93,11 @@ func main() {
 	case "TwoSide":
 		strategy = strategies.NewTwoSideStrategy(tradingEngine)
 	case "LateEntry":
+		strategy = strategies.NewLateEntryStrategy(tradingEngine)
+	case "Sway":
 		fallthrough
 	default:
-		strategy = strategies.NewLateEntryStrategy(tradingEngine)
+		strategy = strategies.NewSwayStrategy(tradingEngine)
 	}
 	log.Printf("✅ Strategy loaded: %s\n", strategy.Name())
 
