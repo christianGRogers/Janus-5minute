@@ -29,17 +29,35 @@ WINDOW_SIZES = [10, 15, 20, 30, 60]
 MIN_POINTS_PER_WINDOW = 3
 
 # ======================================================================
+# V2 CONFIG  (must stay in sync with sway_model.py V2_FEATURE_NAMES)
+# ======================================================================
+
+ROLLING_STEPS = 5
+ROLLING_STEP_SIZE = 5
+
+V2_FEATURE_NAMES = [
+    'sway_10s_last', 'sway_10s_mean', 'sway_10s_std', 'sway_10s_trend', 'sway_10s_data_count',
+    'sway_15s_last', 'sway_15s_mean', 'sway_15s_std', 'sway_15s_trend', 'sway_15s_data_count',
+    'sway_20s_last', 'sway_20s_mean', 'sway_20s_std', 'sway_20s_trend', 'sway_20s_data_count',
+    'sway_30s_last', 'sway_30s_mean', 'sway_30s_std', 'sway_30s_trend', 'sway_30s_data_count',
+    'sway_60s_last', 'sway_60s_mean', 'sway_60s_std', 'sway_60s_trend', 'sway_60s_data_count',
+    'sway_agreement', 'sway_magnitude', 'short_long_div', 'time_remaining',
+]
+
+# ======================================================================
 # Market Discovery
 # ======================================================================
 
-def get_valid_market_slugs(num_markets=10):
-    """Get valid market slugs by searching backwards from current time"""
-    
-    now = int(time.time())
-    # Align to 5-minute boundary
-    current_window = now - (now % 300)
+def get_valid_market_slugs(num_markets=10, before_timestamp=None):
+    """Get valid market slugs by searching backwards from current time (or before_timestamp)."""
+
+    if before_timestamp is not None:
+        current_window = before_timestamp - (before_timestamp % 300)
+    else:
+        now = int(time.time())
+        current_window = now - (now % 300)
     market_slugs = []
-    
+
     print(f"Searching for {num_markets} valid markets...")
     
     for i in range(1, num_markets * 3):  # Search more to account for missing markets
@@ -273,6 +291,86 @@ def get_actual_outcome(event, times, prices, market_start):
         return prices[-1]
     
     return 0.5
+
+# ======================================================================
+# V2 Feature Extraction & Model Dispatch
+# ======================================================================
+
+def extract_features_v2(times, prices, market_start, elapsed):
+    """
+    Compute 29 v2 features at `elapsed` seconds from market_start.
+    Rolling sway: computed at elapsed, elapsed-5, elapsed-10, elapsed-15, elapsed-20.
+    No look-ahead: only trades with rel_time <= elapsed are used.
+    Returns dict matching V2_FEATURE_NAMES, or None if insufficient data.
+    """
+    rel_times = times - market_start
+    if (rel_times <= elapsed).sum() < MIN_POINTS_PER_WINDOW:
+        return None
+
+    step_times = [elapsed - i * ROLLING_STEP_SIZE for i in range(ROLLING_STEPS)]
+    features = {}
+
+    for w in WINDOW_SIZES:
+        sway_vals = []
+        for step_t in step_times:
+            if step_t < w:
+                sway_vals.append(np.nan)
+                continue
+            sway = calculate_sway_at_time(times, prices, market_start, step_t, w)
+            sway_vals.append(sway)
+
+        valid = [v for v in sway_vals if not np.isnan(v)]
+        data_count = len(valid)
+        last  = sway_vals[0] if not np.isnan(sway_vals[0]) else 0.0
+        mean  = float(np.mean(valid))  if data_count > 0 else 0.0
+        std   = float(np.std(valid))   if data_count > 1 else 0.0
+        if data_count > 1:
+            chrono = list(reversed(valid))           # oldest → newest
+            trend = float(np.mean(np.diff(chrono)))  # positive = rising
+        else:
+            trend = 0.0
+
+        features[f'sway_{w}s_last']       = last
+        features[f'sway_{w}s_mean']       = mean
+        features[f'sway_{w}s_std']        = std
+        features[f'sway_{w}s_trend']      = trend
+        features[f'sway_{w}s_data_count'] = float(data_count)
+
+    last_vals = [features[f'sway_{w}s_last'] for w in WINDOW_SIZES]
+    nonzero = [v for v in last_vals if v != 0.0]
+    if nonzero:
+        pos_frac = sum(1 for v in nonzero if v > 0) / len(nonzero)
+        features['sway_agreement'] = 2.0 * pos_frac - 1.0
+    else:
+        features['sway_agreement'] = 0.0
+    features['sway_magnitude'] = float(np.mean([abs(v) for v in last_vals]))
+    features['short_long_div'] = features['sway_10s_last'] - features['sway_60s_last']
+    features['time_remaining'] = float(300 - elapsed)
+
+    return features
+
+
+def make_prediction(model_data, features_dict, remaining):
+    """
+    Dispatch prediction to the correct model based on pkl version.
+    v1 pkl: has 'model' key (single model, all timepoints).
+    v2 pkl: has 'models' key (dict keyed by remaining time).
+    Returns float in [0, 1] or None.
+    """
+    if 'models' in model_data:
+        slot = model_data['models'].get(int(remaining))
+        if slot is None:
+            return None
+        model = slot['model']
+        feature_names = model_data['feature_names']
+    else:
+        model = model_data['model']
+        feature_names = model_data['feature_names']
+
+    fv = pd.DataFrame([{k: features_dict.get(k, 0.0) for k in feature_names}])
+    fv = fv[feature_names].fillna(0.0)
+    return float(np.clip(model.predict(fv)[0], 0.0, 1.0))
+
 
 # ======================================================================
 # Test Single Market at Multiple Prediction Times
@@ -527,6 +625,169 @@ def test_multiple_markets(model_path='sway_model_production.pkl',
         print("No successful tests completed")
 
 # ======================================================================
+# V2 Comparison
+# ======================================================================
+
+def test_market_comparison(model_v1, model_v2, slug, prediction_times=[60, 30, 20, 15, 10]):
+    """
+    Run both v1 and v2 models on one market.
+    v1 uses extract_features_at_prediction_time; v2 uses extract_features_v2.
+    Returns side-by-side prediction results.
+    """
+    event = fetch_market_by_slug(slug)
+    if not event:
+        return None
+
+    market_info = parse_market_info(event)
+    market_start = int(slug.split('-')[-1])
+
+    times, prices = fetch_all_trades(market_info['condition_id'], market_info['outcome_token'])
+    if len(times) == 0:
+        return None
+
+    rel_times = times - market_start
+    actual_price = get_actual_outcome(event, times, prices, market_start)
+    actual_outcome = "UP" if actual_price >= 0.5 else "DOWN"
+
+    predictions = []
+    for remaining in prediction_times:
+        elapsed = 300 - remaining
+
+        if rel_times[-1] < elapsed:
+            continue
+
+        trades_at_point = int(np.sum(rel_times <= elapsed))
+
+        # V1
+        v1_pred = None
+        v1_feat = extract_features_at_prediction_time(times, prices, market_start, elapsed)
+        if v1_feat is not None:
+            v1_pred = make_prediction(model_v1, v1_feat, remaining)
+
+        # V2
+        v2_pred = None
+        v2_feat = extract_features_v2(times, prices, market_start, elapsed)
+        if v2_feat is not None:
+            v2_pred = make_prediction(model_v2, v2_feat, remaining)
+
+        predictions.append({
+            'remaining': remaining,
+            'trades_available': trades_at_point,
+            'actual_price': actual_price,
+            'actual_outcome': actual_outcome,
+            'v1_pred': v1_pred,
+            'v1_outcome': ("UP" if v1_pred >= 0.5 else "DOWN") if v1_pred is not None else None,
+            'v1_correct': bool((v1_pred >= 0.5) == (actual_price >= 0.5)) if v1_pred is not None else None,
+            'v1_confidence': abs(v1_pred - 0.5) * 2 if v1_pred is not None else None,
+            'v2_pred': v2_pred,
+            'v2_outcome': ("UP" if v2_pred >= 0.5 else "DOWN") if v2_pred is not None else None,
+            'v2_correct': bool((v2_pred >= 0.5) == (actual_price >= 0.5)) if v2_pred is not None else None,
+            'v2_confidence': abs(v2_pred - 0.5) * 2 if v2_pred is not None else None,
+        })
+
+    return {
+        'slug': slug,
+        'actual_price': actual_price,
+        'actual_outcome': actual_outcome,
+        'predictions': predictions,
+    }
+
+
+def compare_models(model1_path, model2_path, num_markets=20, prediction_times=[60, 30, 20, 15, 10], before_timestamp=None):
+    """Run both models on the same markets and print a side-by-side accuracy table."""
+    print("=" * 80)
+    print("MODEL COMPARISON BACKTEST")
+    print("=" * 80)
+    print(f"V1: {model1_path}")
+    print(f"V2: {model2_path}")
+    print("=" * 80)
+
+    import warnings
+    warnings.filterwarnings('ignore')
+
+    model_v1 = joblib.load(model1_path)
+    model_v2 = joblib.load(model2_path)
+
+    v1_meta = model_v1.get('metadata', {})
+    v2_meta = model_v2.get('metadata', {})
+    print(f"\nV1 metadata: markets={v1_meta.get('num_markets','?')}  "
+          f"R²={v1_meta.get('r2_score', v1_meta.get('avg_r2','?'))}")
+    print(f"V2 metadata: markets={v2_meta.get('num_markets','?')}  "
+          f"avg R²={v2_meta.get('avg_r2','?'):.4f}  "
+          f"per-slot={v2_meta.get('per_slot_r2',{})}")
+
+    market_slugs = get_valid_market_slugs(num_markets, before_timestamp=before_timestamp)
+    if not market_slugs:
+        print("No markets found")
+        return
+
+    all_results = []
+    for slug in market_slugs:
+        print(f"  Testing {slug[-25:]}...", end=' ', flush=True)
+        result = test_market_comparison(model_v1, model_v2, slug, prediction_times)
+        if result and result['predictions']:
+            all_results.append(result)
+            print(f"actual={result['actual_outcome']}")
+        else:
+            print("skipped")
+        time.sleep(1)
+
+    if not all_results:
+        print("No results to report")
+        return
+
+    # Count actuals for base-rate
+    actuals = [r['actual_outcome'] for r in all_results]
+    down_count = actuals.count('DOWN')
+    base_rate = down_count / len(actuals)
+    print(f"\nBase rate: {down_count}/{len(actuals)} DOWN ({base_rate:.1%})")
+    print(f"Naive always-DOWN accuracy: {base_rate:.1%}")
+
+    print(f"\n{'='*80}")
+    print(f"{'Time Rem':>10} | {'V1 Acc':>8} | {'V2 Acc':>8} | {'V1 Conf':>8} | {'V2 Conf':>8} | {'n':>4}")
+    print(f"{'='*80}")
+
+    for remaining in prediction_times:
+        v1_correct = v1_total = v2_correct = v2_total = 0
+        v1_confs, v2_confs = [], []
+
+        for r in all_results:
+            for p in r['predictions']:
+                if p['remaining'] != remaining:
+                    continue
+                if p['v1_correct'] is not None:
+                    v1_total += 1
+                    v1_correct += int(p['v1_correct'])
+                    v1_confs.append(p['v1_confidence'])
+                if p['v2_correct'] is not None:
+                    v2_total += 1
+                    v2_correct += int(p['v2_correct'])
+                    v2_confs.append(p['v2_confidence'])
+
+        v1_acc  = f"{v1_correct/v1_total:.1%}" if v1_total else "N/A"
+        v2_acc  = f"{v2_correct/v2_total:.1%}" if v2_total else "N/A"
+        v1_conf = f"{np.mean(v1_confs):.1%}" if v1_confs else "N/A"
+        v2_conf = f"{np.mean(v2_confs):.1%}" if v2_confs else "N/A"
+        n = max(v1_total, v2_total)
+        print(f"{remaining:>8}s rem | {v1_acc:>8} | {v2_acc:>8} | {v1_conf:>8} | {v2_conf:>8} | {n:>4}")
+
+    # Totals
+    v1_all_c = v1_all_t = v2_all_c = v2_all_t = 0
+    for r in all_results:
+        for p in r['predictions']:
+            if p['v1_correct'] is not None:
+                v1_all_t += 1; v1_all_c += int(p['v1_correct'])
+            if p['v2_correct'] is not None:
+                v2_all_t += 1; v2_all_c += int(p['v2_correct'])
+
+    print(f"{'='*80}")
+    v1_oa = f"{v1_all_c/v1_all_t:.1%}" if v1_all_t else "N/A"
+    v2_oa = f"{v2_all_c/v2_all_t:.1%}" if v2_all_t else "N/A"
+    print(f"{'OVERALL':>10} | {v1_oa:>8} | {v2_oa:>8} | {'':>8} | {'':>8} | {max(v1_all_t,v2_all_t):>4}")
+    print(f"Base rate (always-DOWN): {base_rate:.1%}")
+
+
+# ======================================================================
 # Test Specific Market
 # ======================================================================
 
@@ -597,21 +858,32 @@ def main():
                        help='Comma-separated list of seconds REMAINING in market when prediction is made')
     parser.add_argument('--list', action='store_true',
                        help='List available markets without testing')
-    
+    parser.add_argument('--model2', type=str, default=None,
+                       help='Second model path for side-by-side comparison')
+    parser.add_argument('--compare', action='store_true',
+                       help='Compare --model vs --model2 on same markets')
+    parser.add_argument('--before', type=int, default=None,
+                       help='Only test markets with timestamp before this Unix time (for OOS testing)')
+
     args = parser.parse_args()
-    
+
     if args.list:
         list_available_markets(20)
         return
-    
-    # Parse prediction times
+
     prediction_times = [int(t.strip()) for t in args.prediction_times.split(',')]
-    
+
+    if args.compare:
+        if not args.model2:
+            print("--compare requires --model2")
+            return
+        compare_models(args.model, args.model2, args.num_markets, prediction_times,
+                       before_timestamp=args.before)
+        return
+
     if args.slug:
-        # Test single market
         test_specific_market(args.model, args.slug)
     else:
-        # Test multiple markets
         test_multiple_markets(args.model, prediction_times, args.num_markets)
 
 if __name__ == "__main__":
