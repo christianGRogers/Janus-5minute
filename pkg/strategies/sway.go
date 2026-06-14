@@ -278,6 +278,12 @@ func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, no
 			continue
 		}
 
+		// If nobody is selling this outcome (empty ask side), the UP mid-price
+		// signal becomes stale and can produce misleading sway — skip entirely.
+		if book.BestAskSizeParsed < 1.0 {
+			continue
+		}
+
 		var outcome, marketID string
 		switch {
 		case strings.HasSuffix(cacheKey, "-UP"):
