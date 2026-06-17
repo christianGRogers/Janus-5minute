@@ -315,9 +315,8 @@ func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, no
 			continue
 		}
 
-		// If the market itself is pricing this outcome below $0.70, require very
-		// high confidence (>95%) — the market is signalling doubt and we should too.
-		if book.BestAskParsed < 0.70 && pred.Confidence <= 0.95 {
+		// Never open a position if the market is pricing this outcome below $0.85.
+		if book.BestAskParsed < 0.85 {
 			continue
 		}
 
