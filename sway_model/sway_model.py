@@ -1215,14 +1215,17 @@ def print_benchmark_table(label_scores):
         row = f"{str(r) + 's rem':>10}"
         for lbl in labels:
             s = label_scores[lbl].get(r)
-            row += f"  {(f'{s[\"accuracy\"]:.1%}'):>{col_w}}" if s else f"  {'N/A':>{col_w}}"
-            row += f"  {(f'{s[\"brier\"]:.4f}'):>8}"          if s else f"  {'N/A':>8}"
+            acc_str   = f"{s['accuracy']:.1%}" if s else 'N/A'
+            brier_str = f"{s['brier']:.4f}"    if s else 'N/A'
+            row += f"  {acc_str:>{col_w}}  {brier_str:>8}"
         print(row)
 
     row = f"{'OVERALL':>10}"
     for lbl in labels:
         s = label_scores[lbl].get('overall', {})
-        row += f"  {(f'{s.get(\"accuracy\", 0):.1%}'):>{col_w}}  {(f'{s.get(\"brier\", 1):.4f}'):>8}"
+        acc_str   = f"{s.get('accuracy', 0):.1%}"
+        brier_str = f"{s.get('brier', 1):.4f}"
+        row += f"  {acc_str:>{col_w}}  {brier_str:>8}"
     print(row)
     print()
 
