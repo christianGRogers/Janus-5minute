@@ -49,6 +49,20 @@ ROLLING_STEPS = 5
 ROLLING_STEP_SIZE = 5       # seconds between rolling sway snapshots
 LOOKUP_TOLERANCE = 2.0      # max seconds deviation when matching CSV rows
 
+# ======================================================================
+# V3 CONFIG
+# ======================================================================
+
+# Asset prefixes to search for 5-minute up/down markets.
+# Add more here (e.g. "xrp", "bnb") to include them automatically.
+V3_ASSET_PREFIXES = ["btc", "eth", "sol"]
+
+# Hold-out backtest config — markets are fetched once and reused every iteration.
+BACKTEST_N_MARKETS  = 40          # number of hold-out markets
+BACKTEST_ASSET      = "btc"       # asset used for all hold-out markets (consistent across versions)
+MIN_ACCURACY_DELTA  = 0.03        # v3 must beat best benchmark by ≥ 3 pp accuracy
+MIN_BRIER_DELTA     = 0.01        # or improve Brier score by ≥ 0.01 (lower = better)
+
 V2_REMAINING_TIMES = [60, 30, 20, 15, 10]
 
 # 29 features — must stay identical to V2_FEATURE_NAMES in backtest.py
@@ -97,6 +111,41 @@ def find_historical_markets(num_markets=100):
     
     print(f"Found {len(events)} valid markets")
     return events
+
+def find_historical_markets_v3(num_markets_per_asset=None, total_markets=None):
+    """
+    Find historical 5-minute Up/Down markets across all V3_ASSET_PREFIXES.
+
+    Pass either:
+      total_markets  – target total across all assets (split evenly), OR
+      num_markets_per_asset – fixed count per asset.
+    """
+    now = int(time.time())
+    current_window_start = now - (now % 300)
+
+    if total_markets is not None:
+        per_asset = max(1, total_markets // len(V3_ASSET_PREFIXES))
+    elif num_markets_per_asset is not None:
+        per_asset = num_markets_per_asset
+    else:
+        per_asset = INITIAL_MARKETS // len(V3_ASSET_PREFIXES)
+
+    all_events = []
+    for asset in V3_ASSET_PREFIXES:
+        print(f"\n  [{asset.upper()}] Searching {per_asset} markets...")
+        found = 0
+        for i in range(1, per_asset + 1):
+            window_start = current_window_start - i * 300
+            slug = f"{asset}-updown-5m-{window_start}"
+            ev = fetch_event_by_slug(slug)
+            if ev and ev.get("markets") and ev["markets"][0].get("clobTokenIds"):
+                all_events.append(ev)
+                found += 1
+        print(f"  [{asset.upper()}] Found {found} valid markets")
+
+    print(f"\nV3 total: {len(all_events)} markets across {len(V3_ASSET_PREFIXES)} assets")
+    return all_events
+
 
 def parse_market(event):
     """Parse market data from event"""
@@ -971,6 +1020,392 @@ def run_v2_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R
 
 
 # ======================================================================
+# V3 Inline Backtest & Benchmark
+# ======================================================================
+
+def _sway_at_time(times, prices, market_start, elapsed, window_size):
+    """Single-point sway at elapsed seconds from market_start (no look-ahead)."""
+    rel = times - market_start
+    mask = rel <= elapsed
+    rt, pr = rel[mask], prices[mask]
+    wstart = elapsed - window_size
+    wmask = (rt >= wstart) & (rt <= elapsed)
+    x, y = rt[wmask] - wstart, pr[wmask]
+    if len(x) < MIN_POINTS_PER_WINDOW:
+        return np.nan
+    m, a, b = fit_channel(x, y)
+    width = b - a
+    return m / width if width > 1e-9 else np.nan
+
+
+def _extract_features_v1_inline(times, prices, market_start, elapsed):
+    """V1-style single-point features."""
+    rel = times - market_start
+    if (rel <= elapsed).sum() < MIN_POINTS_PER_WINDOW:
+        return None
+    features = {'time_remaining': float(300 - elapsed)}
+    for w in WINDOW_SIZES:
+        sway = _sway_at_time(times, prices, market_start, elapsed, w)
+        v = sway if not np.isnan(sway) else 0.0
+        col = f'sway_{w}s'
+        features[f'{col}_last']       = v
+        features[f'{col}_mean']       = v
+        features[f'{col}_std']        = 0.0
+        features[f'{col}_trend']      = 0.0
+        features[f'{col}_data_count'] = 0.0 if np.isnan(sway) else 1.0
+    return features
+
+
+def _extract_features_v2_inline(times, prices, market_start, elapsed):
+    """V2/V3 rolling features — mirrors backtest.py extract_features_v2."""
+    rel = times - market_start
+    if (rel <= elapsed).sum() < MIN_POINTS_PER_WINDOW:
+        return None
+    step_times = [elapsed - i * ROLLING_STEP_SIZE for i in range(ROLLING_STEPS)]
+    features = {}
+    for w in WINDOW_SIZES:
+        sway_vals = []
+        for st in step_times:
+            sway_vals.append(np.nan if st < w else _sway_at_time(times, prices, market_start, st, w))
+        valid = [v for v in sway_vals if not np.isnan(v)]
+        dc   = len(valid)
+        last = sway_vals[0] if not np.isnan(sway_vals[0]) else 0.0
+        mean = float(np.mean(valid))        if dc > 0 else 0.0
+        std  = float(np.std(valid))         if dc > 1 else 0.0
+        if dc > 1:
+            trend = float(np.mean(np.diff(list(reversed(valid)))))
+        else:
+            trend = 0.0
+        features[f'sway_{w}s_last']       = last
+        features[f'sway_{w}s_mean']       = mean
+        features[f'sway_{w}s_std']        = std
+        features[f'sway_{w}s_trend']      = trend
+        features[f'sway_{w}s_data_count'] = float(dc)
+    last_vals = [features[f'sway_{w}s_last'] for w in WINDOW_SIZES]
+    nonzero = [v for v in last_vals if v != 0.0]
+    features['sway_agreement'] = (2.0 * sum(1 for v in nonzero if v > 0) / len(nonzero) - 1.0) if nonzero else 0.0
+    features['sway_magnitude']  = float(np.mean([abs(v) for v in last_vals]))
+    features['short_long_div']  = features['sway_10s_last'] - features['sway_60s_last']
+    features['time_remaining']  = float(300 - elapsed)
+    return features
+
+
+def _extract_features_for_model(model_data, times, prices, market_start, elapsed):
+    """Dispatch to the right feature set based on model version."""
+    version = model_data.get('metadata', {}).get('version', 1)
+    if version >= 2:
+        return _extract_features_v2_inline(times, prices, market_start, elapsed)
+    return _extract_features_v1_inline(times, prices, market_start, elapsed)
+
+
+def _predict_from_model(model_data, features, remaining):
+    """Dispatch prediction to the correct model slot."""
+    if 'models' in model_data:
+        slot = model_data['models'].get(int(remaining))
+        if slot is None:
+            return None
+        mdl, fnames = slot['model'], model_data['feature_names']
+    else:
+        mdl, fnames = model_data['model'], model_data['feature_names']
+    fv = pd.DataFrame([{k: features.get(k, 0.0) for k in fnames}])[fnames].fillna(0.0)
+    return float(np.clip(mdl.predict(fv)[0], 0.0, 1.0))
+
+
+def fetch_holdout_data(n=BACKTEST_N_MARKETS):
+    """
+    Fetch trade data for n hold-out markets that lie outside the maximum training window.
+    Uses BACKTEST_ASSET so the same markets are comparable across all model versions.
+    Returns list of dicts: {slug, times, prices, market_start, actual_price}.
+    """
+    now = int(time.time())
+    current_window = now - (now % 300)
+    # Place holdout beyond the training window with a 200-market safety gap
+    offset_start = MAX_MARKETS + 200
+
+    collected = []
+    print(f"\n[Holdout] Fetching {n} {BACKTEST_ASSET.upper()} hold-out markets "
+          f"(>{offset_start * 5 // 60}h ago)...")
+
+    for i in range(1, n * 4):          # over-sample since many will be missing
+        if len(collected) >= n:
+            break
+        ts   = current_window - (offset_start + i) * 300
+        slug = f"{BACKTEST_ASSET}-updown-5m-{ts}"
+        ev   = fetch_event_by_slug(slug)
+        if not ev or not ev.get("markets") or not ev["markets"][0].get("clobTokenIds"):
+            continue
+        info = parse_market(ev)
+        times, prices = fetch_market_trades(info['condition_id'], info['outcome_token'])
+        mask = (times >= ts) & (times <= ts + 360)
+        times, prices = times[mask], prices[mask]
+        if len(times) < MIN_POINTS_PER_WINDOW:
+            continue
+        rel = times - ts
+        final_mask = (rel >= 290) & (rel <= 310)
+        actual = float(np.clip(np.mean(prices[final_mask]), 0, 1)) if final_mask.sum() > 0 \
+                 else float(np.clip(prices[-1], 0, 1))
+        collected.append({'slug': slug, 'times': times, 'prices': prices,
+                          'market_start': ts, 'actual_price': actual})
+
+    print(f"[Holdout] Collected {len(collected)} markets")
+    return collected
+
+
+def score_model_on_holdout(model_data, holdout_data):
+    """
+    Evaluate model on hold-out data.
+    Primary metric: directional accuracy.  Secondary: Brier score (lower = better).
+    Returns {remaining: {accuracy, brier, n}, 'overall': {accuracy, brier, n}}.
+    """
+    per_slot = {r: {'correct': 0, 'brier': 0.0, 'n': 0} for r in V2_REMAINING_TIMES}
+
+    for mkt in holdout_data:
+        times, prices    = mkt['times'], mkt['prices']
+        market_start     = mkt['market_start']
+        actual_price     = mkt['actual_price']
+        actual_bin       = 1.0 if actual_price >= 0.5 else 0.0
+        rel_max          = (times - market_start).max() if len(times) else 0
+
+        for remaining in V2_REMAINING_TIMES:
+            elapsed = 300 - remaining
+            if rel_max < elapsed - LOOKUP_TOLERANCE:
+                continue
+            features = _extract_features_for_model(model_data, times, prices, market_start, elapsed)
+            if features is None:
+                continue
+            pred = _predict_from_model(model_data, features, remaining)
+            if pred is None:
+                continue
+            per_slot[remaining]['correct'] += int((pred >= 0.5) == (actual_price >= 0.5))
+            per_slot[remaining]['brier']   += (pred - actual_bin) ** 2
+            per_slot[remaining]['n']       += 1
+
+    scores = {}
+    total_correct = total_brier = total_n = 0
+    for r, s in per_slot.items():
+        n = s['n']
+        if n > 0:
+            scores[r] = {'accuracy': s['correct'] / n, 'brier': s['brier'] / n, 'n': n}
+        total_correct += s['correct']
+        total_brier   += s['brier']
+        total_n       += n
+
+    scores['overall'] = {
+        'accuracy': total_correct / total_n if total_n else 0.0,
+        'brier':    total_brier   / total_n if total_n else 1.0,
+        'n':        total_n,
+    }
+    return scores
+
+
+def print_benchmark_table(label_scores):
+    """
+    label_scores: {label_str: scores_dict}
+    Prints a side-by-side accuracy + Brier table across all prediction slots.
+    """
+    labels = list(label_scores.keys())
+    col_w  = 14
+    header = f"{'Slot':>10}"
+    for lbl in labels:
+        header += f"  {('─' + lbl + ' acc─').center(col_w)}  {('brier').center(8)}"
+    print("\n" + header)
+    print("─" * len(header))
+
+    for r in V2_REMAINING_TIMES:
+        row = f"{str(r) + 's rem':>10}"
+        for lbl in labels:
+            s = label_scores[lbl].get(r)
+            row += f"  {(f'{s[\"accuracy\"]:.1%}'):>{col_w}}" if s else f"  {'N/A':>{col_w}}"
+            row += f"  {(f'{s[\"brier\"]:.4f}'):>8}"          if s else f"  {'N/A':>8}"
+        print(row)
+
+    row = f"{'OVERALL':>10}"
+    for lbl in labels:
+        s = label_scores[lbl].get('overall', {})
+        row += f"  {(f'{s.get(\"accuracy\", 0):.1%}'):>{col_w}}  {(f'{s.get(\"brier\", 1):.4f}'):>8}"
+    print(row)
+    print()
+
+
+def is_v3_significantly_better(v3_scores, benchmark_scores):
+    """
+    True if v3 exceeds the best existing model on the hold-out set.
+    Winning condition (either):
+      - overall accuracy ≥ best_benchmark + MIN_ACCURACY_DELTA
+      - overall Brier    ≤ best_benchmark - MIN_BRIER_DELTA
+    """
+    if not benchmark_scores or 'overall' not in v3_scores:
+        return False
+    best_acc   = max(s.get('overall', {}).get('accuracy', 0.0) for s in benchmark_scores.values())
+    best_brier = min(s.get('overall', {}).get('brier',    1.0) for s in benchmark_scores.values())
+    v3_acc     = v3_scores['overall']['accuracy']
+    v3_brier   = v3_scores['overall']['brier']
+    return (v3_acc >= best_acc + MIN_ACCURACY_DELTA) or (v3_brier <= best_brier - MIN_BRIER_DELTA)
+
+
+# ======================================================================
+# V3 Pipeline
+# ======================================================================
+
+def run_v3_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
+    """
+    V3 training pipeline.
+    Same V2 feature engineering but trains across multiple assets (BTC, ETH, SOL, …).
+    Success criterion: directional accuracy + Brier score vs. existing model benchmarks.
+    R² is reported per iteration but is NOT the stop condition.
+    Saves to sway_model_v3_production.pkl (never overwrites v1 or v2).
+    """
+    print("=" * 80)
+    print("SWAY MODEL V3 TRAINING PIPELINE")
+    print("=" * 80)
+    print("Improvements vs v2:")
+    print(f"  - Multi-asset training: {', '.join(a.upper() for a in V3_ASSET_PREFIXES)}")
+    print("  - More diverse sway patterns → better generalisation")
+    print(f"Success criterion: accuracy > best_benchmark + {MIN_ACCURACY_DELTA:.0%}  "
+          f"OR  Brier < best_benchmark - {MIN_BRIER_DELTA:.2f}")
+    print(f"Initial markets (total): {initial_markets}")
+    print("=" * 80)
+
+    # ── Step 1: fetch hold-out data once ──────────────────────────────
+    holdout_data = fetch_holdout_data(BACKTEST_N_MARKETS)
+    has_holdout  = len(holdout_data) >= 10   # need a reasonable sample
+
+    # ── Step 2: benchmark existing models once ─────────────────────────
+    benchmark_scores = {}
+    if has_holdout:
+        print("\n[Benchmark] Scoring existing models on hold-out set...")
+        for model_path, label in [
+            ('sway_model_production.pkl',    'v1'),
+            ('sway_model_v2_production.pkl', 'v2'),
+        ]:
+            if os.path.exists(model_path):
+                try:
+                    bm = joblib.load(model_path)
+                    benchmark_scores[label] = score_model_on_holdout(bm, holdout_data)
+                    ov = benchmark_scores[label]['overall']
+                    print(f"  {label}: accuracy={ov['accuracy']:.1%}  "
+                          f"Brier={ov['brier']:.4f}  (n={ov['n']})")
+                except Exception as e:
+                    print(f"  {label}: could not load — {e}")
+
+        if not benchmark_scores:
+            print("  No existing models found — v3 will use accuracy > 55% as target.")
+            benchmark_scores['baseline'] = {
+                'overall': {'accuracy': 0.55, 'brier': 0.25, 'n': 0}
+            }
+    else:
+        print("[Benchmark] Insufficient hold-out data — falling back to R² criterion.")
+
+    # ── Training loop ──────────────────────────────────────────────────
+    current_markets = initial_markets
+    iteration       = 1
+
+    while current_markets <= MAX_MARKETS:
+        print(f"\n{'='*80}")
+        print(f"ITERATION {iteration}: {current_markets} total markets")
+        print(f"{'='*80}")
+
+        events = find_historical_markets_v3(total_markets=current_markets)
+        if not events:
+            print("No markets found, retrying...")
+            time.sleep(60)
+            continue
+
+        markets_data = collect_market_data_v2(events)
+        if not markets_data:
+            print("No valid in-window markets.")
+            current_markets += MARKET_BATCH_SIZE
+            continue
+
+        csv_path = f"training_data_v3_{len(markets_data)}_markets.csv"
+        save_markets_to_csv_v2(markets_data, csv_path)
+
+        try:
+            X, y, remaining_arr = load_and_prepare_data_v2(csv_path)
+        except Exception as e:
+            print(f"Error preparing v3 data: {e}")
+            current_markets += MARKET_BATCH_SIZE
+            iteration += 1
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+            continue
+
+        print("\n[V3] Training per-remaining-time models...")
+        models = {}
+        for remaining in V2_REMAINING_TIMES:
+            model, r2 = train_v2_model(X, y, remaining_arr, remaining)
+            if model is not None:
+                models[remaining] = {'model': model, 'r2': r2}
+                n = int((remaining_arr == remaining).sum())
+                print(f"  {remaining}s remaining: R² = {r2:.4f}  ({n} samples)")
+
+        if os.path.exists(csv_path):
+            os.remove(csv_path)
+
+        if not models:
+            current_markets += MARKET_BATCH_SIZE
+            iteration += 1
+            continue
+
+        avg_r2 = float(np.mean([m['r2'] for m in models.values()]))
+        print(f"\n[V3] Train-set avg R²: {avg_r2:.4f}  (informational only)")
+
+        # ── Backtest candidate on hold-out ─────────────────────────────
+        winner = False
+        if has_holdout:
+            candidate = {
+                'models':        models,
+                'feature_names': V2_FEATURE_NAMES,
+                'metadata':      {'version': 3},
+            }
+            v3_scores = score_model_on_holdout(candidate, holdout_data)
+            all_scores = {**benchmark_scores, f'v3_iter{iteration}': v3_scores}
+            print_benchmark_table(all_scores)
+            winner = is_v3_significantly_better(v3_scores, benchmark_scores)
+        else:
+            # Fallback: R² criterion
+            winner = avg_r2 >= target_r2
+            if winner:
+                print(f"  [Fallback] R² target met: {avg_r2:.4f} >= {target_r2}")
+
+        if winner:
+            production_model = {
+                'models':        models,
+                'feature_names': V2_FEATURE_NAMES,
+                'metadata': {
+                    'version':           3,
+                    'assets':            V3_ASSET_PREFIXES,
+                    'num_markets':       len(markets_data),
+                    'avg_r2':            avg_r2,
+                    'per_slot_r2':       {r: models[r]['r2'] for r in models},
+                    'training_date':     time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'rolling_steps':     ROLLING_STEPS,
+                    'rolling_step_size': ROLLING_STEP_SIZE,
+                    'window_sizes':      WINDOW_SIZES,
+                },
+            }
+            if has_holdout:
+                production_model['metadata']['holdout_scores'] = {
+                    str(k): v for k, v in v3_scores.items()
+                }
+                production_model['metadata']['benchmark_scores'] = {
+                    lbl: {str(k): v for k, v in sc.items()}
+                    for lbl, sc in benchmark_scores.items()
+                }
+
+            joblib.dump(production_model, 'sway_model_v3_production.pkl')
+            print("\nSaved: sway_model_v3_production.pkl")
+            return production_model
+
+        print(f"V3 not yet significantly better. Adding {MARKET_BATCH_SIZE} more markets...")
+        current_markets += MARKET_BATCH_SIZE
+        iteration += 1
+
+    print("Max markets reached without achieving target performance.")
+    return None
+
+
+# ======================================================================
 # Command-line interface
 # ======================================================================
 
@@ -987,8 +1422,21 @@ def main():
     parser.add_argument('--resume', type=str, help='Resume from checkpoint file')
     parser.add_argument('--v2', action='store_true',
                         help='Run v2 pipeline (rolling features, per-slot models, clean time reference)')
+    parser.add_argument('--v3', action='store_true',
+                        help='Run v3 pipeline (v2 features + multi-asset training: BTC, ETH, SOL)')
 
     args = parser.parse_args()
+
+    if args.v3:
+        result = run_v3_training_pipeline(
+            initial_markets=args.initial,
+            target_r2=args.target,
+        )
+        if result:
+            print("\nV3 training complete. Saved to sway_model_v3_production.pkl")
+        else:
+            print("\nV3 training failed to reach target R²")
+        return
 
     if args.v2:
         result = run_v2_training_pipeline(
