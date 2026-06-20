@@ -55,7 +55,7 @@ LOOKUP_TOLERANCE = 2.0      # max seconds deviation when matching CSV rows
 
 # Asset prefixes to search for 5-minute up/down markets.
 # Add more here (e.g. "xrp", "bnb") to include them automatically.
-V3_ASSET_PREFIXES = ["btc", "eth", "sol"]
+V3_ASSET_PREFIXES = ["btc"]
 
 # Hold-out backtest config — markets are fetched once and reused every iteration.
 BACKTEST_N_MARKETS  = 40          # number of hold-out markets
