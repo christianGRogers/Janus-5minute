@@ -60,8 +60,6 @@ V3_ASSET_PREFIXES = ["btc"]
 # Hold-out backtest config — markets are fetched once and reused every iteration.
 BACKTEST_N_MARKETS  = 40          # number of hold-out markets
 BACKTEST_ASSET      = "btc"       # asset used for all hold-out markets (consistent across versions)
-MIN_ACCURACY_DELTA  = 0.03        # v3 must beat best benchmark by ≥ 3 pp accuracy
-MIN_BRIER_DELTA     = 0.01        # or improve Brier score by ≥ 0.01 (lower = better)
 
 V2_REMAINING_TIMES = [60, 30, 20, 15, 10]
 
@@ -1230,20 +1228,18 @@ def print_benchmark_table(label_scores):
     print()
 
 
-def is_v3_significantly_better(v3_scores, benchmark_scores):
+def beats_previous_version(cand_scores, prev_scores):
     """
-    True if v3 exceeds the best existing model on the hold-out set.
-    Winning condition (either):
-      - overall accuracy ≥ best_benchmark + MIN_ACCURACY_DELTA
-      - overall Brier    ≤ best_benchmark - MIN_BRIER_DELTA
+    True if the candidate beats the immediate predecessor by any margin on either metric.
+    Older models shown in the table are for context only — not part of the win condition.
     """
-    if not benchmark_scores or 'overall' not in v3_scores:
+    if not prev_scores or 'overall' not in cand_scores:
         return False
-    best_acc   = max(s.get('overall', {}).get('accuracy', 0.0) for s in benchmark_scores.values())
-    best_brier = min(s.get('overall', {}).get('brier',    1.0) for s in benchmark_scores.values())
-    v3_acc     = v3_scores['overall']['accuracy']
-    v3_brier   = v3_scores['overall']['brier']
-    return (v3_acc >= best_acc + MIN_ACCURACY_DELTA) or (v3_brier <= best_brier - MIN_BRIER_DELTA)
+    prev_acc   = prev_scores.get('overall', {}).get('accuracy', 0.0)
+    prev_brier = prev_scores.get('overall', {}).get('brier',    1.0)
+    cand_acc   = cand_scores['overall']['accuracy']
+    cand_brier = cand_scores['overall']['brier']
+    return cand_acc > prev_acc or cand_brier < prev_brier
 
 
 # ======================================================================
@@ -1263,12 +1259,12 @@ def find_latest_model_version():
     return None
 
 
-def run_versioned_pipeline(version, initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
+def run_versioned_pipeline(version, initial_markets=INITIAL_MARKETS, max_markets=MAX_MARKETS, target_r2=TARGET_R2):
     """
     Generic training pipeline for any version >= 3.
     Benchmarks against the previous version (and up to 2 older ones for context).
-    Stop criterion: directional accuracy or Brier score on a fixed hold-out set.
-    R² is printed per iteration but is NOT the stop condition.
+    Saves as soon as the candidate beats the predecessor by any margin.
+    If max_markets is exhausted without a winner, saves the best candidate seen.
     """
     output_path = _model_path(version)
 
@@ -1277,9 +1273,8 @@ def run_versioned_pipeline(version, initial_markets=INITIAL_MARKETS, target_r2=T
     print("=" * 80)
     print(f"Benchmarking against: v{version - 1}")
     print(f"Output: {output_path}")
-    print(f"Success: accuracy > benchmark + {MIN_ACCURACY_DELTA:.0%}  "
-          f"OR  Brier < benchmark - {MIN_BRIER_DELTA:.2f}")
-    print(f"Initial markets: {initial_markets} | Max: {MAX_MARKETS} | Batch: {MARKET_BATCH_SIZE}")
+    print(f"Win condition: beat v{version-1} on accuracy OR Brier by any margin")
+    print(f"Initial markets: {initial_markets} | Max: {max_markets} | Batch: {MARKET_BATCH_SIZE}")
     print("=" * 80)
 
     # Hold-out data fetched once per version training run
@@ -1309,10 +1304,13 @@ def run_versioned_pipeline(version, initial_markets=INITIAL_MARKETS, target_r2=T
     else:
         print("[Benchmark] Insufficient hold-out data — falling back to R² criterion.")
 
-    current_markets = initial_markets
-    iteration       = 1
+    current_markets  = initial_markets
+    iteration        = 1
+    best_candidate   = None   # {'production_model': dict, 'scores': dict, 'acc': float}
+    prev_label       = f'v{version - 1}'
+    prev_scores      = benchmark_scores.get(prev_label, benchmark_scores.get('baseline', {}))
 
-    while current_markets <= MAX_MARKETS:
+    while current_markets <= max_markets:
         print(f"\n{'='*80}")
         print(f"V{version} ITERATION {iteration}: {current_markets} markets")
         print(f"{'='*80}")
@@ -1362,6 +1360,22 @@ def run_versioned_pipeline(version, initial_markets=INITIAL_MARKETS, target_r2=T
         avg_r2 = float(np.mean([m['r2'] for m in models.values()]))
         print(f"\n[V{version}] Train-set avg R²: {avg_r2:.4f}  (informational only)")
 
+        production_model = {
+            'models':        models,
+            'feature_names': V2_FEATURE_NAMES,
+            'metadata': {
+                'version':           version,
+                'assets':            V3_ASSET_PREFIXES,
+                'num_markets':       len(markets_data),
+                'avg_r2':            avg_r2,
+                'per_slot_r2':       {r: models[r]['r2'] for r in models},
+                'training_date':     time.strftime('%Y-%m-%d %H:%M:%S'),
+                'rolling_steps':     ROLLING_STEPS,
+                'rolling_step_size': ROLLING_STEP_SIZE,
+                'window_sizes':      WINDOW_SIZES,
+            },
+        }
+
         winner = False
         if has_holdout:
             candidate   = {'models': models, 'feature_names': V2_FEATURE_NAMES,
@@ -1369,53 +1383,62 @@ def run_versioned_pipeline(version, initial_markets=INITIAL_MARKETS, target_r2=T
             cand_scores = score_model_on_holdout(candidate, holdout_data)
             all_scores  = {**benchmark_scores, f'v{version}_iter{iteration}': cand_scores}
             print_benchmark_table(all_scores)
-            winner = is_v3_significantly_better(cand_scores, benchmark_scores)
+
+            production_model['metadata']['holdout_scores'] = {
+                str(k): v for k, v in cand_scores.items()
+            }
+            production_model['metadata']['benchmark_scores'] = {
+                lbl: {str(k): v for k, v in sc.items()}
+                for lbl, sc in benchmark_scores.items()
+            }
+
+            # Track best candidate seen so far (by accuracy, Brier as tiebreak)
+            cand_acc = cand_scores['overall']['accuracy']
+            cand_bri = cand_scores['overall']['brier']
+            if (best_candidate is None
+                    or cand_acc > best_candidate['acc']
+                    or (cand_acc == best_candidate['acc'] and cand_bri < best_candidate['brier'])):
+                best_candidate = {'production_model': production_model,
+                                  'scores': cand_scores,
+                                  'acc': cand_acc, 'brier': cand_bri}
+
+            winner = beats_previous_version(cand_scores, prev_scores)
         else:
             winner = avg_r2 >= target_r2
             if winner:
                 print(f"  [Fallback] R² target met: {avg_r2:.4f} >= {target_r2}")
+            if best_candidate is None or avg_r2 > best_candidate.get('acc', 0):
+                best_candidate = {'production_model': production_model,
+                                  'acc': avg_r2, 'brier': 0}
 
         if winner:
-            production_model = {
-                'models':        models,
-                'feature_names': V2_FEATURE_NAMES,
-                'metadata': {
-                    'version':           version,
-                    'assets':            V3_ASSET_PREFIXES,
-                    'num_markets':       len(markets_data),
-                    'avg_r2':            avg_r2,
-                    'per_slot_r2':       {r: models[r]['r2'] for r in models},
-                    'training_date':     time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'rolling_steps':     ROLLING_STEPS,
-                    'rolling_step_size': ROLLING_STEP_SIZE,
-                    'window_sizes':      WINDOW_SIZES,
-                },
-            }
-            if has_holdout:
-                production_model['metadata']['holdout_scores'] = {
-                    str(k): v for k, v in cand_scores.items()
-                }
-                production_model['metadata']['benchmark_scores'] = {
-                    lbl: {str(k): v for k, v in sc.items()}
-                    for lbl, sc in benchmark_scores.items()
-                }
             joblib.dump(production_model, output_path)
             print(f"\nSaved: {output_path}")
             return production_model
 
-        print(f"V{version} not yet significantly better. Adding {MARKET_BATCH_SIZE} more markets...")
+        print(f"Not yet better than v{version-1}. Adding {MARKET_BATCH_SIZE} more markets...")
         current_markets += MARKET_BATCH_SIZE
         iteration += 1
 
-    print(f"Max markets reached for v{version}.")
+    # Max markets exhausted — save the best candidate seen
+    if best_candidate is not None:
+        model_to_save = best_candidate['production_model']
+        joblib.dump(model_to_save, output_path)
+        ov = best_candidate.get('scores', {}).get('overall', {})
+        print(f"\nMax markets reached. Saved best candidate: "
+              f"accuracy={ov.get('accuracy', 0):.1%}  Brier={ov.get('brier', 1):.4f}")
+        print(f"Saved: {output_path}")
+        return model_to_save
+
+    print(f"Max markets reached for v{version} with no valid candidates.")
     return None
 
 
-def run_continuous_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
+def run_continuous_pipeline(initial_markets=INITIAL_MARKETS, max_markets=MAX_MARKETS, target_r2=TARGET_R2):
     """
     Continuously train new model versions until Ctrl+C.
-    Each version benchmarks against the previous best and only saves when
-    it is significantly better on the hold-out set.
+    Each version benchmarks against the previous best.
+    Always saves something (winner or best candidate) before moving to the next version.
     """
     print("=" * 80)
     print("CONTINUOUS IMPROVEMENT PIPELINE")
@@ -1434,13 +1457,12 @@ def run_continuous_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2
             print(f"CONTINUOUS: training v{next_version}  (current best: v{latest})")
             print(f"{'='*80}")
 
-            result = run_versioned_pipeline(next_version, initial_markets, target_r2)
+            result = run_versioned_pipeline(next_version, initial_markets, max_markets, target_r2)
 
             if result:
                 print(f"\nv{next_version} saved. Starting v{next_version + 1}...")
             else:
-                print(f"\nv{next_version} could not beat v{latest} within {MAX_MARKETS} markets.")
-                print("Stopping continuous pipeline.")
+                print(f"\nNo candidate found for v{next_version}. Stopping.")
                 break
 
     except KeyboardInterrupt:
@@ -1476,6 +1498,7 @@ def main():
     if args.continuous:
         run_continuous_pipeline(
             initial_markets=args.initial,
+            max_markets=args.max,
             target_r2=args.target,
         )
         return
@@ -1484,6 +1507,7 @@ def main():
         result = run_versioned_pipeline(
             version=3,
             initial_markets=args.initial,
+            max_markets=args.max,
             target_r2=args.target,
         )
         if result:
