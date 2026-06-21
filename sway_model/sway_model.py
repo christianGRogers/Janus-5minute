@@ -1247,65 +1247,74 @@ def is_v3_significantly_better(v3_scores, benchmark_scores):
 
 
 # ======================================================================
-# V3 Pipeline
+# Versioned Pipeline (v3 and beyond)
 # ======================================================================
 
-def run_v3_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
+def _model_path(version):
+    """Return the production pkl filename for a given version number."""
+    return 'sway_model_production.pkl' if version == 1 else f'sway_model_v{version}_production.pkl'
+
+
+def find_latest_model_version():
+    """Return the highest version number with a saved production model, or None."""
+    for v in range(50, 0, -1):
+        if os.path.exists(_model_path(v)):
+            return v
+    return None
+
+
+def run_versioned_pipeline(version, initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
     """
-    V3 training pipeline.
-    Same V2 feature engineering but trains across multiple assets (BTC, ETH, SOL, …).
-    Success criterion: directional accuracy + Brier score vs. existing model benchmarks.
-    R² is reported per iteration but is NOT the stop condition.
-    Saves to sway_model_v3_production.pkl (never overwrites v1 or v2).
+    Generic training pipeline for any version >= 3.
+    Benchmarks against the previous version (and up to 2 older ones for context).
+    Stop criterion: directional accuracy or Brier score on a fixed hold-out set.
+    R² is printed per iteration but is NOT the stop condition.
     """
+    output_path = _model_path(version)
+
     print("=" * 80)
-    print("SWAY MODEL V3 TRAINING PIPELINE")
+    print(f"SWAY MODEL V{version} TRAINING PIPELINE")
     print("=" * 80)
-    print("Improvements vs v2:")
-    print(f"  - Multi-asset training: {', '.join(a.upper() for a in V3_ASSET_PREFIXES)}")
-    print("  - More diverse sway patterns → better generalisation")
-    print(f"Success criterion: accuracy > best_benchmark + {MIN_ACCURACY_DELTA:.0%}  "
-          f"OR  Brier < best_benchmark - {MIN_BRIER_DELTA:.2f}")
-    print(f"Initial markets (total): {initial_markets}")
+    print(f"Benchmarking against: v{version - 1}")
+    print(f"Output: {output_path}")
+    print(f"Success: accuracy > benchmark + {MIN_ACCURACY_DELTA:.0%}  "
+          f"OR  Brier < benchmark - {MIN_BRIER_DELTA:.2f}")
+    print(f"Initial markets: {initial_markets} | Max: {MAX_MARKETS} | Batch: {MARKET_BATCH_SIZE}")
     print("=" * 80)
 
-    # ── Step 1: fetch hold-out data once ──────────────────────────────
+    # Hold-out data fetched once per version training run
     holdout_data = fetch_holdout_data(BACKTEST_N_MARKETS)
-    has_holdout  = len(holdout_data) >= 10   # need a reasonable sample
+    has_holdout  = len(holdout_data) >= 10
 
-    # ── Step 2: benchmark existing models once ─────────────────────────
+    # Benchmark: the previous version is primary; show up to 2 older for context
     benchmark_scores = {}
     if has_holdout:
-        print("\n[Benchmark] Scoring existing models on hold-out set...")
-        for model_path, label in [
-            ('sway_model_production.pkl',    'v1'),
-            ('sway_model_v2_production.pkl', 'v2'),
-        ]:
-            if os.path.exists(model_path):
+        print(f"\n[Benchmark] Scoring existing models on hold-out set...")
+        for v_check in range(max(1, version - 3), version):
+            p = _model_path(v_check)
+            if os.path.exists(p):
                 try:
-                    bm = joblib.load(model_path)
-                    benchmark_scores[label] = score_model_on_holdout(bm, holdout_data)
-                    ov = benchmark_scores[label]['overall']
-                    print(f"  {label}: accuracy={ov['accuracy']:.1%}  "
+                    bm  = joblib.load(p)
+                    lbl = f'v{v_check}'
+                    benchmark_scores[lbl] = score_model_on_holdout(bm, holdout_data)
+                    ov  = benchmark_scores[lbl]['overall']
+                    print(f"  {lbl}: accuracy={ov['accuracy']:.1%}  "
                           f"Brier={ov['brier']:.4f}  (n={ov['n']})")
                 except Exception as e:
-                    print(f"  {label}: could not load — {e}")
+                    print(f"  v{v_check}: could not load — {e}")
 
         if not benchmark_scores:
-            print("  No existing models found — v3 will use accuracy > 55% as target.")
-            benchmark_scores['baseline'] = {
-                'overall': {'accuracy': 0.55, 'brier': 0.25, 'n': 0}
-            }
+            print(f"  No existing models found — using accuracy > 55% as baseline.")
+            benchmark_scores['baseline'] = {'overall': {'accuracy': 0.55, 'brier': 0.25, 'n': 0}}
     else:
         print("[Benchmark] Insufficient hold-out data — falling back to R² criterion.")
 
-    # ── Training loop ──────────────────────────────────────────────────
     current_markets = initial_markets
     iteration       = 1
 
     while current_markets <= MAX_MARKETS:
         print(f"\n{'='*80}")
-        print(f"ITERATION {iteration}: {current_markets} total markets")
+        print(f"V{version} ITERATION {iteration}: {current_markets} markets")
         print(f"{'='*80}")
 
         events = find_historical_markets_v3(total_markets=current_markets)
@@ -1320,20 +1329,20 @@ def run_v3_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R
             current_markets += MARKET_BATCH_SIZE
             continue
 
-        csv_path = f"training_data_v3_{len(markets_data)}_markets.csv"
+        csv_path = f"training_data_v{version}_{len(markets_data)}_markets.csv"
         save_markets_to_csv_v2(markets_data, csv_path)
 
         try:
             X, y, remaining_arr = load_and_prepare_data_v2(csv_path)
         except Exception as e:
-            print(f"Error preparing v3 data: {e}")
+            print(f"Error preparing data: {e}")
             current_markets += MARKET_BATCH_SIZE
             iteration += 1
             if os.path.exists(csv_path):
                 os.remove(csv_path)
             continue
 
-        print("\n[V3] Training per-remaining-time models...")
+        print(f"\n[V{version}] Training per-remaining-time models...")
         models = {}
         for remaining in V2_REMAINING_TIMES:
             model, r2 = train_v2_model(X, y, remaining_arr, remaining)
@@ -1351,22 +1360,17 @@ def run_v3_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R
             continue
 
         avg_r2 = float(np.mean([m['r2'] for m in models.values()]))
-        print(f"\n[V3] Train-set avg R²: {avg_r2:.4f}  (informational only)")
+        print(f"\n[V{version}] Train-set avg R²: {avg_r2:.4f}  (informational only)")
 
-        # ── Backtest candidate on hold-out ─────────────────────────────
         winner = False
         if has_holdout:
-            candidate = {
-                'models':        models,
-                'feature_names': V2_FEATURE_NAMES,
-                'metadata':      {'version': 3},
-            }
-            v3_scores = score_model_on_holdout(candidate, holdout_data)
-            all_scores = {**benchmark_scores, f'v3_iter{iteration}': v3_scores}
+            candidate   = {'models': models, 'feature_names': V2_FEATURE_NAMES,
+                           'metadata': {'version': version}}
+            cand_scores = score_model_on_holdout(candidate, holdout_data)
+            all_scores  = {**benchmark_scores, f'v{version}_iter{iteration}': cand_scores}
             print_benchmark_table(all_scores)
-            winner = is_v3_significantly_better(v3_scores, benchmark_scores)
+            winner = is_v3_significantly_better(cand_scores, benchmark_scores)
         else:
-            # Fallback: R² criterion
             winner = avg_r2 >= target_r2
             if winner:
                 print(f"  [Fallback] R² target met: {avg_r2:.4f} >= {target_r2}")
@@ -1376,7 +1380,7 @@ def run_v3_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R
                 'models':        models,
                 'feature_names': V2_FEATURE_NAMES,
                 'metadata': {
-                    'version':           3,
+                    'version':           version,
                     'assets':            V3_ASSET_PREFIXES,
                     'num_markets':       len(markets_data),
                     'avg_r2':            avg_r2,
@@ -1389,23 +1393,60 @@ def run_v3_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R
             }
             if has_holdout:
                 production_model['metadata']['holdout_scores'] = {
-                    str(k): v for k, v in v3_scores.items()
+                    str(k): v for k, v in cand_scores.items()
                 }
                 production_model['metadata']['benchmark_scores'] = {
                     lbl: {str(k): v for k, v in sc.items()}
                     for lbl, sc in benchmark_scores.items()
                 }
-
-            joblib.dump(production_model, 'sway_model_v3_production.pkl')
-            print("\nSaved: sway_model_v3_production.pkl")
+            joblib.dump(production_model, output_path)
+            print(f"\nSaved: {output_path}")
             return production_model
 
-        print(f"V3 not yet significantly better. Adding {MARKET_BATCH_SIZE} more markets...")
+        print(f"V{version} not yet significantly better. Adding {MARKET_BATCH_SIZE} more markets...")
         current_markets += MARKET_BATCH_SIZE
         iteration += 1
 
-    print("Max markets reached without achieving target performance.")
+    print(f"Max markets reached for v{version}.")
     return None
+
+
+def run_continuous_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
+    """
+    Continuously train new model versions until Ctrl+C.
+    Each version benchmarks against the previous best and only saves when
+    it is significantly better on the hold-out set.
+    """
+    print("=" * 80)
+    print("CONTINUOUS IMPROVEMENT PIPELINE")
+    print("Ctrl+C at any time to stop cleanly.")
+    print("=" * 80)
+
+    try:
+        while True:
+            latest = find_latest_model_version()
+            if latest is None:
+                print("No existing models found. Run --v2 first to create a baseline.")
+                break
+
+            next_version = latest + 1
+            print(f"\n{'='*80}")
+            print(f"CONTINUOUS: training v{next_version}  (current best: v{latest})")
+            print(f"{'='*80}")
+
+            result = run_versioned_pipeline(next_version, initial_markets, target_r2)
+
+            if result:
+                print(f"\nv{next_version} saved. Starting v{next_version + 1}...")
+            else:
+                print(f"\nv{next_version} could not beat v{latest} within {MAX_MARKETS} markets.")
+                print("Stopping continuous pipeline.")
+                break
+
+    except KeyboardInterrupt:
+        latest = find_latest_model_version()
+        label  = f"v{latest} ({_model_path(latest)})" if latest else "none"
+        print(f"\n\nInterrupted cleanly. Latest saved model: {label}")
 
 
 # ======================================================================
@@ -1426,19 +1467,29 @@ def main():
     parser.add_argument('--v2', action='store_true',
                         help='Run v2 pipeline (rolling features, per-slot models, clean time reference)')
     parser.add_argument('--v3', action='store_true',
-                        help='Run v3 pipeline (v2 features + multi-asset training: BTC, ETH, SOL)')
+                        help='Train v3 (one-shot, benchmarks against v1/v2)')
+    parser.add_argument('--continuous', action='store_true',
+                        help='Continuously train vN+1 beating vN until Ctrl+C')
 
     args = parser.parse_args()
 
+    if args.continuous:
+        run_continuous_pipeline(
+            initial_markets=args.initial,
+            target_r2=args.target,
+        )
+        return
+
     if args.v3:
-        result = run_v3_training_pipeline(
+        result = run_versioned_pipeline(
+            version=3,
             initial_markets=args.initial,
             target_r2=args.target,
         )
         if result:
             print("\nV3 training complete. Saved to sway_model_v3_production.pkl")
         else:
-            print("\nV3 training failed to reach target R²")
+            print("\nV3 training failed to beat benchmarks")
         return
 
     if args.v2:
