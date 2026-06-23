@@ -24,6 +24,16 @@ type SwayModelState struct {
 	ShortLongDiv  float64
 }
 
+// ModelInfo holds the currently loaded sway model's identity and live session stats.
+type ModelInfo struct {
+	Name      string  // "live", "4", "v4", etc.
+	Accuracy  float64 // stored holdout overall accuracy (0 if unavailable)
+	AvgR2     float64 // training avg R²
+	Markets   int     // num_markets used in training
+	AvgConf   float64 // rolling avg confidence from current bot session
+	PredCount int     // total predictions made this bot session
+}
+
 // Dashboard provides minimal, static terminal output that doesn't scroll visually
 // All information is displayed in a locked dashboard format that updates in-place
 type Dashboard struct {
@@ -64,6 +74,10 @@ type Dashboard struct {
 
 	// Sway model state (latest prediction + features)
 	swayState             *SwayModelState
+
+	// Model identity and session performance
+	modelInfo             *ModelInfo
+	retraining            bool
 }
 
 // MarketInfo holds current market book data
@@ -215,6 +229,21 @@ func (d *Dashboard) SetSwayState(state *SwayModelState) {
 	d.swayState = state
 }
 
+// SetModelInfo updates the currently loaded model's identity and session stats.
+func (d *Dashboard) SetModelInfo(info *ModelInfo) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.modelInfo = info
+}
+
+// SetRetraining marks whether the model is currently being retrained.
+// While true, the SWAY MODEL section shows a retraining banner.
+func (d *Dashboard) SetRetraining(v bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.retraining = v
+}
+
 // Render outputs the dashboard to the terminal (static format that updates in place)
 // Uses ANSI codes to clear lines and reposition cursor
 func (d *Dashboard) Render() {
@@ -296,6 +325,31 @@ func (d *Dashboard) Render() {
 
 	// ============ SWAY MODEL SECTION ============
 	fmt.Printf("\n🧠 SWAY MODEL:\n")
+
+	// Model identity + session stats row
+	if d.modelInfo != nil {
+		m := d.modelInfo
+		qualStr := ""
+		if m.Accuracy > 0 {
+			qualStr = fmt.Sprintf("Acc=%.1f%%", m.Accuracy*100)
+		} else if m.AvgR2 > 0 {
+			qualStr = fmt.Sprintf("R²=%.4f", m.AvgR2)
+		}
+		confStr := "—"
+		if m.PredCount > 0 {
+			confStr = fmt.Sprintf("%.1f%%", m.AvgConf*100)
+		}
+		fmt.Printf("   Using: %-8s  Markets: %-5d  %-14s  Session: %d preds  Avg Conf: %s\n",
+			m.Name, m.Markets, qualStr, m.PredCount, confStr)
+	} else {
+		fmt.Printf("   Using: (loading...)\n")
+	}
+
+	// Retraining banner — shown above prediction data when active
+	if d.retraining {
+		fmt.Printf("   ⏳ RETRAINING ON LATEST 600 MARKETS — new BUY orders paused\n")
+	}
+
 	if d.swayState != nil && d.swayState.FeaturesOK {
 		s := d.swayState
 		age := time.Since(s.PredictedAt).Seconds()
