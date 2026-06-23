@@ -149,6 +149,17 @@ def main():
     elapsed = float(data['elapsed'])
     remaining = int(data['remaining'])
 
+    # Load model first so its metadata is available for every response path.
+    model_data = load_model()
+    meta = model_data.get('metadata', {})
+    hs = meta.get('holdout_scores', {}).get('overall', {})
+    model_meta = {
+        'model_version': str(meta.get('version', 'unknown')),
+        'model_accuracy': float(hs.get('accuracy', 0.0)),
+        'model_r2': float(meta.get('avg_r2', 0.0)),
+        'model_markets': int(meta.get('num_markets', 0)),
+    }
+
     features = extract_features_v2(times, prices, market_start, elapsed)
     if features is None:
         json.dump({
@@ -157,10 +168,10 @@ def main():
             'raw_prediction': 0.5,
             'features_computed': False,
             'error': 'insufficient_data',
+            **model_meta,
         }, sys.stdout)
         return
 
-    model_data = load_model()
     slot = model_data['models'].get(remaining)
     if slot is None:
         json.dump({
@@ -169,6 +180,7 @@ def main():
             'raw_prediction': 0.5,
             'features_computed': True,
             'error': f'no_model_slot_{remaining}',
+            **model_meta,
         }, sys.stdout)
         return
 
@@ -195,6 +207,7 @@ def main():
         'sway_magnitude': round(features['sway_magnitude'], 6),
         'short_long_div': round(features['short_long_div'], 6),
         'time_remaining': int(features['time_remaining']),
+        **model_meta,
     }, sys.stdout)
 
 

@@ -92,6 +92,11 @@ type SwayStrategy struct {
 	retraining     bool
 	retrainingMu   sync.Mutex
 
+	// Session-wide prediction stats for dashboard display.
+	sessionPredCount int
+	sessionConfSum   float64
+	sessionMu        sync.Mutex
+
 	dashboard *analytics.Dashboard
 }
 
@@ -304,6 +309,14 @@ func (ss *SwayStrategy) checkExits(markets map[string]*polymarket.MarketBook, no
 
 // checkEntry looks for a BUY opportunity based on the latest model prediction.
 func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, now time.Time) *TradeSignal {
+	ss.retrainingMu.Lock()
+	isRetraining := ss.retraining
+	ss.retrainingMu.Unlock()
+	if isRetraining {
+		log.Printf("[Sway] Retraining in progress — BUY paused")
+		return &TradeSignal{ShouldTrade: false}
+	}
+
 	for cacheKey, book := range markets {
 		if book == nil || book.BestAskParsed == 0 {
 			continue
@@ -451,6 +464,11 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		SwayMagnitude float64            `json:"sway_magnitude"`
 		ShortLongDiv  float64            `json:"short_long_div"`
 		TimeRemaining int                `json:"time_remaining"`
+		// Model identity fields populated by sway_predict.py
+		ModelVersion  string  `json:"model_version"`
+		ModelAccuracy float64 `json:"model_accuracy"`
+		ModelR2       float64 `json:"model_r2"`
+		ModelMarkets  int     `json:"model_markets"`
 	}
 	if err := json.Unmarshal(out, &result); err != nil {
 		log.Printf("[Sway] Bad JSON from inference script for %s: %v | output: %s", marketID, err, string(out))
@@ -484,10 +502,31 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 	ss.predictions[marketID] = pred
 	ss.predMu.Unlock()
 
-	log.Printf("[Sway] PREDICTION | market=%s | %ds remaining | outcome=%s | confidence=%.1f%% | raw=%.4f | features=%v",
-		marketID, remaining, pred.Outcome, pred.Confidence*100, pred.RawPrediction, pred.FeaturesOK)
+	log.Printf("[Sway] PREDICTION | market=%s | %ds remaining | outcome=%s | confidence=%.1f%% | raw=%.4f | features=%v | model=%s",
+		marketID, remaining, pred.Outcome, pred.Confidence*100, pred.RawPrediction, pred.FeaturesOK, result.ModelVersion)
+
+	// Update session-level confidence rolling average.
+	ss.sessionMu.Lock()
+	if result.FeaturesOK {
+		ss.sessionPredCount++
+		ss.sessionConfSum += result.Confidence
+	}
+	avgConf := 0.0
+	if ss.sessionPredCount > 0 {
+		avgConf = ss.sessionConfSum / float64(ss.sessionPredCount)
+	}
+	predCount := ss.sessionPredCount
+	ss.sessionMu.Unlock()
 
 	if ss.dashboard != nil {
+		ss.dashboard.SetModelInfo(&analytics.ModelInfo{
+			Name:      result.ModelVersion,
+			Accuracy:  result.ModelAccuracy,
+			AvgR2:     result.ModelR2,
+			Markets:   result.ModelMarkets,
+			AvgConf:   avgConf,
+			PredCount: predCount,
+		})
 		ss.dashboard.SetSwayState(&analytics.SwayModelState{
 			MarketID:        marketID,
 			Outcome:         result.Outcome,
@@ -586,11 +625,18 @@ func (ss *SwayStrategy) triggerRetrain() {
 	ss.retraining = true
 	ss.retrainingMu.Unlock()
 
+	if ss.dashboard != nil {
+		ss.dashboard.SetRetraining(true)
+	}
+
 	go func() {
 		defer func() {
 			ss.retrainingMu.Lock()
 			ss.retraining = false
 			ss.retrainingMu.Unlock()
+			if ss.dashboard != nil {
+				ss.dashboard.SetRetraining(false)
+			}
 		}()
 
 		log.Printf("[Sway] Retrain started (latest 600 markets → sway_model_live.pkl)")
