@@ -129,8 +129,13 @@ def extract_features_v2(times, prices, market_start, elapsed):
 def load_model():
     import joblib
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(script_dir, 'sway_model_v2_production.pkl')
-    return joblib.load(model_path)
+    # Prefer the live model (kept fresh by retrain.py); fall back to the best
+    # static model (v4) when a live model doesn't exist yet.
+    for name in ('sway_model_live.pkl', 'sway_model_v4_production.pkl', 'sway_model_v2_production.pkl'):
+        path = os.path.join(script_dir, name)
+        if os.path.exists(path):
+            return joblib.load(path)
+    raise FileNotFoundError(f"No sway model found in {script_dir}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────

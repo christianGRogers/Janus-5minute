@@ -214,7 +214,16 @@ def fetch_market_trades(condition_id, token_id):
 
 def fit_channel(x, y):
     """Fit linear channel to price data"""
-    m, c = np.polyfit(x, y, 1)
+    if len(x) < 2:
+        return 0, 0, 0
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        return 0, 0, 0
+    if np.ptp(x) == 0:
+        return 0, 0, 0
+    try:
+        m, c = np.polyfit(x, y, 1)
+    except (np.linalg.LinAlgError, ValueError):
+        return 0, 0, 0
     resid = y - (m * x + c)
     a = c + resid.min()
     b = c + resid.max()

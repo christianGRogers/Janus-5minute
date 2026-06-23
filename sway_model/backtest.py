@@ -9,6 +9,7 @@ Historical Market Backtest Script
 
 import argparse
 import json
+import os
 import time
 import numpy as np
 import pandas as pd
@@ -175,8 +176,14 @@ def fit_channel(x, y):
     """Fit linear channel to price data"""
     if len(x) < 2:
         return 0, 0, 0
-    
-    m, c = np.polyfit(x, y, 1)
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        return 0, 0, 0
+    if np.ptp(x) == 0:
+        return 0, 0, 0
+    try:
+        m, c = np.polyfit(x, y, 1)
+    except (np.linalg.LinAlgError, ValueError):
+        return 0, 0, 0
     resid = y - (m * x + c)
     a = c + resid.min()
     b = c + resid.max()
@@ -431,10 +438,9 @@ def test_market_at_prediction_times(model_data, slug, prediction_times=[60, 30, 
     print(f"PREDICTIONS (using only data available up to each prediction time)")
     print(f"{'='*80}")
     
-    model = model_data['model']
-    feature_names = model_data['feature_names']
+    version = model_data.get('metadata', {}).get('version', 1)
     results = []
-    
+
     for pred_remaining in prediction_times:
         # Convert remaining seconds to elapsed seconds from market start
         elapsed = 300 - pred_remaining
@@ -448,10 +454,11 @@ def test_market_at_prediction_times(model_data, slug, prediction_times=[60, 30, 
         print(f"Predicting with {pred_remaining}s remaining ({elapsed}s elapsed)")
         print(f"{'='*60}")
 
-        # Extract features using ONLY data up to the elapsed point
-        features = extract_features_at_prediction_time(
-            trades_times, prices, market_start, elapsed
-        )
+        # Extract features using the right method for this model version
+        if version >= 2:
+            features = extract_features_v2(trades_times, prices, market_start, elapsed)
+        else:
+            features = extract_features_at_prediction_time(trades_times, prices, market_start, elapsed)
 
         if features is None:
             print(f"  ✗ Insufficient data for prediction")
@@ -475,15 +482,11 @@ def test_market_at_prediction_times(model_data, slug, prediction_times=[60, 30, 
         if sway_count == 0:
             print(f"  ⚠️ No sway values available, prediction may be unreliable")
 
-        # Create feature vector
-        feature_vector = pd.DataFrame([features])
-        for col in feature_names:
-            if col not in feature_vector.columns:
-                feature_vector[col] = 0
-        feature_vector = feature_vector[feature_names].fillna(0)
-
-        # Make prediction
-        prediction_price = model.predict(feature_vector)[0]
+        # Make prediction via dispatcher (handles v1 single model and v2+ per-slot models)
+        prediction_price = make_prediction(model_data, features, pred_remaining)
+        if prediction_price is None:
+            print(f"  ✗ No model slot for {pred_remaining}s remaining")
+            continue
         prediction_price = np.clip(prediction_price, 0, 1)
         predicted_outcome = "UP" if prediction_price >= 0.5 else "DOWN"
         confidence = abs(prediction_price - 0.5) * 2
@@ -537,9 +540,13 @@ def test_multiple_markets(model_path='sway_model_production.pkl',
     print(f"\nLoading model from {model_path}...")
     try:
         model_data = joblib.load(model_path)
+        meta = model_data.get('metadata', {})
         print(f"✓ Model loaded successfully!")
-        print(f"  - R² score: {model_data['metadata']['r2_score']:.4f}")
-        print(f"  - Training date: {model_data['metadata']['training_date']}")
+        print(f"  - Version: v{meta.get('version', 1)}")
+        print(f"  - Markets: {meta.get('num_markets', '?')}")
+        r2 = meta.get('avg_r2', meta.get('r2_score', '?'))
+        print(f"  - Avg R²: {r2}")
+        print(f"  - Training date: {meta.get('training_date', '?')}")
     except Exception as e:
         print(f"✗ Error loading model: {e}")
         return
@@ -788,6 +795,191 @@ def compare_models(model1_path, model2_path, num_markets=20, prediction_times=[6
 
 
 # ======================================================================
+# Full Model Benchmark
+# ======================================================================
+
+def benchmark_all_models(num_markets=30, prediction_times=[60, 30, 20, 15, 10], before_timestamp=None):
+    """
+    Discover all sway_model*_production.pkl files, run them on the same set of
+    live markets, and print accuracy / Brier / confidence tables with a ranking.
+    """
+    import glob as _glob
+    import re as _re
+
+    model_files = sorted(_glob.glob('sway_model*_production.pkl'))
+    if not model_files:
+        print("No sway_model*_production.pkl files found in current directory.")
+        return
+
+    print("=" * 80)
+    print("FULL MODEL BENCHMARK  (all versions, same markets)")
+    print("=" * 80)
+
+    # Load models and assign short labels
+    models = {}
+    for path in model_files:
+        try:
+            m = joblib.load(path)
+        except Exception as e:
+            print(f"  {path}: load error — {e}")
+            continue
+        meta = m.get('metadata', {})
+        ver = meta.get('version')
+        if ver is not None:
+            label = f"v{ver}"
+        else:
+            match = _re.search(r'v(\d+)', os.path.basename(path))
+            label = f"v{match.group(1)}" if match else 'orig'
+        # Deduplicate: if label already taken, append file suffix
+        if label in models:
+            label = label + '_b'
+        models[label] = m
+        ov = meta.get('holdout_scores', {}).get('overall', {})
+        stored = (f"stored acc={ov['accuracy']:.3f} brier={ov['brier']:.4f}"
+                  if ov else "no stored holdout")
+        print(f"  {label:>6}  {os.path.basename(path):<38}  {stored}")
+
+    if not models:
+        print("No models loaded.")
+        return
+
+    # Fetch a shared set of recent completed markets
+    market_slugs = get_valid_market_slugs(num_markets, before_timestamp=before_timestamp)
+    if not market_slugs:
+        print("No markets found.")
+        return
+
+    labels = list(models.keys())
+
+    # Accumulators: {label: {remaining: {correct, brier_sum, confs, n}}}
+    acc = {lbl: {t: {'correct': 0, 'brier': 0.0, 'confs': [], 'n': 0}
+                 for t in prediction_times}
+           for lbl in labels}
+    actuals = []
+
+    print(f"\nTesting {len(market_slugs)} markets × {len(labels)} models...\n")
+
+    for slug in market_slugs:
+        print(f"  {slug[-25:]}", end='  ', flush=True)
+
+        event = fetch_market_by_slug(slug)
+        if not event:
+            print("not found")
+            continue
+
+        market_info = parse_market_info(event)
+        market_start = int(slug.split('-')[-1])
+        times, prices = fetch_all_trades(market_info['condition_id'], market_info['outcome_token'])
+
+        if len(times) == 0:
+            print("no trades")
+            continue
+
+        actual_price = get_actual_outcome(event, times, prices, market_start)
+        actual_bin   = 1.0 if actual_price >= 0.5 else 0.0
+        actual_out   = "UP" if actual_price >= 0.5 else "DOWN"
+        actuals.append(actual_out)
+        rel_times = times - market_start
+
+        row_parts = [f"actual={actual_out}"]
+        for lbl, model_data in models.items():
+            version = model_data.get('metadata', {}).get('version', 1)
+            for remaining in prediction_times:
+                elapsed = 300 - remaining
+                if len(rel_times) == 0 or rel_times[-1] < elapsed:
+                    continue
+                if version >= 2:
+                    features = extract_features_v2(times, prices, market_start, elapsed)
+                else:
+                    features = extract_features_at_prediction_time(times, prices, market_start, elapsed)
+                if features is None:
+                    continue
+                pred = make_prediction(model_data, features, remaining)
+                if pred is None:
+                    continue
+                pred = float(np.clip(pred, 0.0, 1.0))
+                acc[lbl][remaining]['correct'] += int((pred >= 0.5) == (actual_price >= 0.5))
+                acc[lbl][remaining]['brier']   += (pred - actual_bin) ** 2
+                acc[lbl][remaining]['confs'].append(abs(pred - 0.5) * 2)
+                acc[lbl][remaining]['n']       += 1
+
+        print(' | '.join(row_parts))
+        time.sleep(0.5)
+
+    # ── Base rate ─────────────────────────────────────────────────────────
+    n_mkts = len(actuals)
+    down_n = actuals.count('DOWN')
+    base   = down_n / n_mkts if n_mkts else 0
+    print(f"\nMarkets tested: {n_mkts}  |  DOWN={down_n}  UP={n_mkts-down_n}  "
+          f"base rate always-DOWN: {base:.1%}")
+
+    col_w = max(9, max(len(l) for l in labels) + 1)
+
+    def _fmt_header():
+        h = f"{'Slot':>10}"
+        for lbl in labels:
+            h += f"  {lbl:>{col_w}}"
+        return h
+
+    def _print_table(title, getter):
+        print(f"\n{'='*80}")
+        print(title)
+        print('='*80)
+        hdr = _fmt_header()
+        print(hdr)
+        print('-' * len(hdr))
+        for remaining in prediction_times:
+            row = f"{str(remaining)+'s rem':>10}"
+            for lbl in labels:
+                s = acc[lbl][remaining]
+                row += f"  {getter(s):>{col_w}}"
+            print(row)
+        # Overall row
+        print('-' * len(hdr))
+        row = f"{'OVERALL':>10}"
+        for lbl in labels:
+            totals = {'correct': sum(acc[lbl][t]['correct'] for t in prediction_times),
+                      'brier':   sum(acc[lbl][t]['brier']   for t in prediction_times),
+                      'n':       sum(acc[lbl][t]['n']        for t in prediction_times),
+                      'confs':   [c for t in prediction_times for c in acc[lbl][t]['confs']]}
+            row += f"  {getter(totals):>{col_w}}"
+        print(row)
+
+    def acc_str(s):
+        return f"{s['correct']/s['n']:.1%}" if s['n'] else 'N/A'
+
+    def brier_str(s):
+        return f"{s['brier']/s['n']:.4f}" if s['n'] else 'N/A'
+
+    def conf_str(s):
+        return f"{np.mean(s['confs']):.1%}" if s.get('confs') else 'N/A'
+
+    _print_table("ACCURACY  (higher is better)", acc_str)
+    _print_table("BRIER SCORE  (lower is better)", brier_str)
+    _print_table("AVG CONFIDENCE", conf_str)
+
+    # ── Ranking summary ───────────────────────────────────────────────────
+    print(f"\n{'='*80}")
+    print("RANKING SUMMARY")
+    print('='*80)
+
+    ranking = []
+    for lbl in labels:
+        tc = sum(acc[lbl][t]['correct'] for t in prediction_times)
+        tb = sum(acc[lbl][t]['brier']   for t in prediction_times)
+        tn = sum(acc[lbl][t]['n']       for t in prediction_times)
+        if tn > 0:
+            ranking.append({'label': lbl, 'accuracy': tc/tn, 'brier': tb/tn, 'n': tn})
+
+    ranking.sort(key=lambda x: (-x['accuracy'], x['brier']))
+    print(f"{'Rank':>5}  {'Model':>8}  {'Accuracy':>10}  {'Brier':>10}  {'n':>6}")
+    print('-' * 50)
+    for i, r in enumerate(ranking, 1):
+        tag = '  <- BEST' if i == 1 else ''
+        print(f"{i:>5}  {r['label']:>8}  {r['accuracy']:>9.1%}  {r['brier']:>10.4f}  {r['n']:>6}{tag}")
+
+
+# ======================================================================
 # Test Specific Market
 # ======================================================================
 
@@ -864,6 +1056,8 @@ def main():
                        help='Compare --model vs --model2 on same markets')
     parser.add_argument('--before', type=int, default=None,
                        help='Only test markets with timestamp before this Unix time (for OOS testing)')
+    parser.add_argument('--benchmark-all', action='store_true',
+                       help='Benchmark all sway_model*_production.pkl files on the same markets')
 
     args = parser.parse_args()
 
@@ -872,6 +1066,10 @@ def main():
         return
 
     prediction_times = [int(t.strip()) for t in args.prediction_times.split(',')]
+
+    if args.benchmark_all:
+        benchmark_all_models(args.num_markets, prediction_times, before_timestamp=args.before)
+        return
 
     if args.compare:
         if not args.model2:
