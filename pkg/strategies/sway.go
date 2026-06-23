@@ -83,6 +83,14 @@ type SwayStrategy struct {
 	// Python invocation.
 	pythonBin       string
 	modelScriptPath string
+	retrainScript   string
+
+	// Loss-triggered retrain (mirrors late_entry.go pattern).
+	lossScriptPath string
+	proxyAddress   string
+	lastLossCount  int
+	retraining     bool
+	retrainingMu   sync.Mutex
 
 	dashboard *analytics.Dashboard
 }
@@ -104,6 +112,21 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		scriptPath = "sway_model/sway_predict.py"
 	}
 
+	retrainScript := os.Getenv("SWAY_RETRAIN_SCRIPT")
+	if retrainScript == "" {
+		retrainScript = "sway_model/retrain.py"
+	}
+
+	lossScriptPath := os.Getenv("LOSS_SCRIPT_PATH")
+	if lossScriptPath == "" {
+		lossScriptPath = "tools/get_loss.py"
+	}
+
+	proxyAddress := os.Getenv("PROXY_ADDRESS")
+	if proxyAddress == "" {
+		log.Printf("[Sway] WARNING: PROXY_ADDRESS not set — loss-triggered retrain disabled")
+	}
+
 	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=85%% | stopLoss=$%.2f/share",
 		pythonBin, scriptPath, stopLossOffset)
 
@@ -121,8 +144,16 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		minConfidence:      0.85,
 		pythonBin:          pythonBin,
 		modelScriptPath:    scriptPath,
+		retrainScript:      retrainScript,
+		lossScriptPath:     lossScriptPath,
+		proxyAddress:       proxyAddress,
+		lastLossCount:      -1, // -1 so first window-change always syncs the count
 	}
 	s.Config.RiskTolerance = 0.20
+
+	// Retrain immediately on startup so the model reflects the latest market regime.
+	s.triggerRetrain()
+
 	return s
 }
 
@@ -531,6 +562,9 @@ func (ss *SwayStrategy) OnMarketWindowChange() {
 	ss.pendingOutcome = make(map[string]string)
 
 	log.Printf("[Sway] Market window rolled over — all state reset")
+
+	// Check for new losses and retrain if the count increased.
+	go ss.checkAndRetrain()
 }
 
 // Reset clears all internal state (alias for OnMarketWindowChange).
@@ -538,7 +572,78 @@ func (ss *SwayStrategy) Reset() {
 	ss.OnMarketWindowChange()
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Retraining ───────────────────────────────────────────────────────────────
+
+// triggerRetrain launches retrain.py in a background goroutine.
+// It is a no-op if a retrain is already running.
+func (ss *SwayStrategy) triggerRetrain() {
+	ss.retrainingMu.Lock()
+	if ss.retraining {
+		ss.retrainingMu.Unlock()
+		log.Printf("[Sway] Retrain already in progress — skipping")
+		return
+	}
+	ss.retraining = true
+	ss.retrainingMu.Unlock()
+
+	go func() {
+		defer func() {
+			ss.retrainingMu.Lock()
+			ss.retraining = false
+			ss.retrainingMu.Unlock()
+		}()
+
+		log.Printf("[Sway] Retrain started (latest 600 markets → sway_model_live.pkl)")
+		cmd := exec.Command(ss.pythonBin, ss.retrainScript)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Printf("[Sway] Retrain failed: %v", err)
+		} else {
+			log.Printf("[Sway] Retrain complete — model updated")
+		}
+	}()
+}
+
+// checkAndRetrain calls get_loss.py and triggers a retrain if the loss count
+// has increased since the last window change.
+func (ss *SwayStrategy) checkAndRetrain() {
+	if ss.proxyAddress == "" {
+		return
+	}
+
+	cmd := exec.Command(ss.pythonBin, ss.lossScriptPath)
+	cmd.Env = append(os.Environ(), "PROXY_ADDRESS="+ss.proxyAddress)
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("[Sway] get_loss.py failed: %v", err)
+		return
+	}
+
+	countStr := strings.TrimSpace(string(out))
+	count, err := strconv.Atoi(countStr)
+	if err != nil {
+		log.Printf("[Sway] get_loss.py returned non-integer: %q", countStr)
+		return
+	}
+
+	if ss.lastLossCount < 0 {
+		// First call — just record the baseline, don't retrain.
+		ss.lastLossCount = count
+		log.Printf("[Sway] Loss baseline: %d losses in last 3h", count)
+		return
+	}
+
+	if count > ss.lastLossCount {
+		log.Printf("[Sway] New loss detected (%d → %d losses) — triggering retrain", ss.lastLossCount, count)
+		ss.lastLossCount = count
+		ss.triggerRetrain()
+	} else {
+		ss.lastLossCount = count
+	}
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func swayParseMarketStart(slug string) (int64, bool) {
 	parts := strings.Split(slug, "-")
