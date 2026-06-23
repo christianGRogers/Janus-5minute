@@ -127,14 +127,28 @@ def extract_features_v2(times, prices, market_start, elapsed):
 # ── Model loading ────────────────────────────────────────────────────────────
 
 def load_model():
-    import joblib
+    import joblib, glob as _glob, re as _re
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Prefer the live model (kept fresh by retrain.py); fall back to the best
-    # static model (v4) when a live model doesn't exist yet.
-    for name in ('sway_model_live.pkl', 'sway_model_v4_production.pkl', 'sway_model_v2_production.pkl'):
-        path = os.path.join(script_dir, name)
-        if os.path.exists(path):
-            return joblib.load(path)
+
+    # 1. Live model (kept fresh by retrain.py)
+    live = os.path.join(script_dir, 'sway_model_live.pkl')
+    if os.path.exists(live):
+        return joblib.load(live)
+
+    # 2. Highest-numbered versioned model on disk
+    def _ver(p):
+        m = _re.search(r'v(\d+)', os.path.basename(p))
+        return int(m.group(1)) if m else 0
+
+    versioned = _glob.glob(os.path.join(script_dir, 'sway_model_v[0-9]*_production.pkl'))
+    if versioned:
+        return joblib.load(max(versioned, key=_ver))
+
+    # 3. Unversioned fallback
+    fallback = os.path.join(script_dir, 'sway_model_production.pkl')
+    if os.path.exists(fallback):
+        return joblib.load(fallback)
+
     raise FileNotFoundError(f"No sway model found in {script_dir}")
 
 
