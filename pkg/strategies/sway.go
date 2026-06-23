@@ -212,13 +212,22 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 					ss.predictedSlots[marketID] = make(map[int]bool)
 				}
 				alreadyFired := ss.predictedSlots[marketID][slot]
-				if !alreadyFired {
-					ss.predictedSlots[marketID][slot] = true
-				}
 				ss.predMu.Unlock()
 
 				if !alreadyFired {
-					go ss.runPrediction(marketID, marketStart, int(elapsed), slot)
+					ss.retrainingMu.Lock()
+					isRetraining := ss.retraining
+					ss.retrainingMu.Unlock()
+
+					if isRetraining {
+						// Leave slot unfired so it retries next tick once retrain finishes.
+						log.Printf("[Sway] Skipping %ds prediction for %s — retrain in progress", slot, marketID)
+					} else {
+						ss.predMu.Lock()
+						ss.predictedSlots[marketID][slot] = true
+						ss.predMu.Unlock()
+						go ss.runPrediction(marketID, marketStart, int(elapsed), slot)
+					}
 				}
 			}
 		}
