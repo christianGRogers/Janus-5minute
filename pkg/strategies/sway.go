@@ -474,10 +474,11 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		ShortLongDiv  float64            `json:"short_long_div"`
 		TimeRemaining int                `json:"time_remaining"`
 		// Model identity fields populated by sway_predict.py
-		ModelVersion  string  `json:"model_version"`
-		ModelAccuracy float64 `json:"model_accuracy"`
-		ModelR2       float64 `json:"model_r2"`
-		ModelMarkets  int     `json:"model_markets"`
+		ModelVersion      string  `json:"model_version"`
+		ModelAccuracy     float64 `json:"model_accuracy"`
+		ModelR2           float64 `json:"model_r2"`
+		ModelMarkets      int     `json:"model_markets"`
+		ModelTrainingDate string  `json:"model_training_date"`
 	}
 	if err := json.Unmarshal(out, &result); err != nil {
 		log.Printf("[Sway] Bad JSON from inference script for %s: %v | output: %s", marketID, err, string(out))
@@ -533,6 +534,7 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 			Accuracy:  result.ModelAccuracy,
 			AvgR2:     result.ModelR2,
 			Markets:   result.ModelMarkets,
+			TrainedAt: result.ModelTrainingDate,
 			AvgConf:   avgConf,
 			PredCount: predCount,
 		})
@@ -589,6 +591,11 @@ func (ss *SwayStrategy) OnOrderPlaced(marketID string, side string, price float6
 		}
 		log.Printf("[Sway] Order recorded | market=%s | SELL %.1f @ %.4f | remaining=%.1f shares | exposure=$%.2f",
 			marketID, size, price, ss.ownedInventory[marketID], ss.marketExposure[marketID])
+	}
+
+	if ss.dashboard != nil {
+		ss.dashboard.RecordTrade(side, marketID, price, size)
+		ss.dashboard.UpdatePosition(marketID, ss.ownedInventory[marketID], ss.marketExposure[marketID])
 	}
 }
 
