@@ -30,6 +30,7 @@ type ModelInfo struct {
 	Accuracy  float64 // stored holdout overall accuracy (0 if unavailable)
 	AvgR2     float64 // training avg R²
 	Markets   int     // num_markets used in training
+	TrainedAt string  // training_date from model metadata
 	AvgConf   float64 // rolling avg confidence from current bot session
 	PredCount int     // total predictions made this bot session
 }
@@ -339,8 +340,13 @@ func (d *Dashboard) Render() {
 		if m.PredCount > 0 {
 			confStr = fmt.Sprintf("%.1f%%", m.AvgConf*100)
 		}
+		trainedStr := "unknown"
+		if m.TrainedAt != "" {
+			trainedStr = m.TrainedAt
+		}
 		fmt.Printf("   Using: %-8s  Markets: %-5d  %-14s  Session: %d preds  Avg Conf: %s\n",
 			m.Name, m.Markets, qualStr, m.PredCount, confStr)
+		fmt.Printf("   Trained: %s\n", trainedStr)
 	} else {
 		fmt.Printf("   Using: (loading...)\n")
 	}

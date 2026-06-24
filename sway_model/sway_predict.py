@@ -172,6 +172,7 @@ def main():
         'model_accuracy': float(hs.get('accuracy', 0.0)),
         'model_r2': float(meta.get('avg_r2', 0.0)),
         'model_markets': int(meta.get('num_markets', 0)),
+        'model_training_date': str(meta.get('training_date', '')),
     }
 
     features = extract_features_v2(times, prices, market_start, elapsed)
