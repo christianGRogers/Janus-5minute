@@ -152,12 +152,22 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		retrainScript:      retrainScript,
 		lossScriptPath:     lossScriptPath,
 		proxyAddress:       proxyAddress,
-		lastLossCount:      -1, // -1 so first window-change always syncs the count
+		lastLossCount:      -1,
 	}
 	s.Config.RiskTolerance = 0.20
 
 	// Retrain immediately on startup so the model reflects the latest market regime.
 	s.triggerRetrain()
+
+	// Periodic retrain every 5 hours regardless of loss activity.
+	go func() {
+		ticker := time.NewTicker(5 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			log.Printf("[Sway] Periodic 5-hour retrain triggered")
+			s.triggerRetrain()
+		}
+	}()
 
 	return s
 }
@@ -578,6 +588,10 @@ func (ss *SwayStrategy) OnOrderPlaced(marketID string, side string, price float6
 			marketID, size, price, ss.positionEntryPrice[marketID], stopAt, ss.marketExposure[marketID])
 
 	} else if side == "SELL" {
+		// Detect loss before clearing position metadata.
+		entryPrice := ss.positionEntryPrice[marketID]
+		isLoss := entryPrice > 0 && price < entryPrice
+
 		ss.ownedInventory[marketID] -= size
 		if ss.ownedInventory[marketID] < 0.5 {
 			ss.ownedInventory[marketID] = 0
@@ -591,6 +605,11 @@ func (ss *SwayStrategy) OnOrderPlaced(marketID string, side string, price float6
 		}
 		log.Printf("[Sway] Order recorded | market=%s | SELL %.1f @ %.4f | remaining=%.1f shares | exposure=$%.2f",
 			marketID, size, price, ss.ownedInventory[marketID], ss.marketExposure[marketID])
+
+		if isLoss {
+			log.Printf("[Sway] Loss detected on %s (sell %.4f < entry %.4f) — triggering retrain", marketID, price, entryPrice)
+			go ss.triggerRetrain()
+		}
 	}
 
 	if ss.dashboard != nil {
