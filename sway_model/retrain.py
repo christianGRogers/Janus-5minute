@@ -80,7 +80,7 @@ def retrain():
             'num_markets': len(markets_data),
             'avg_r2': avg_r2,
             'per_slot_r2': {r: models[r]['r2'] for r in models},
-            'training_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'training_date': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
         },
     }
 

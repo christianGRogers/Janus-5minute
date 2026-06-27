@@ -589,7 +589,7 @@ def run_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
                 'num_markets': len(markets_data),
                 'final_r2': avg_r2,
                 'target_r2': target_r2,
-                'training_date': time.strftime("%Y-%m-%d %H:%M:%S")
+                'training_date': time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
             }
             joblib.dump(final_model, 'final_sway_model.pkl')
             
@@ -608,7 +608,7 @@ def run_training_pipeline(initial_markets=INITIAL_MARKETS, target_r2=TARGET_R2):
                     'num_markets': len(markets_data),
                     'r2_score': avg_r2,
                     'target_r2': target_r2,
-                    'training_date': time.strftime("%Y-%m-%d %H:%M:%S")
+                    'training_date': time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
                 }
             }
             joblib.dump(production_model, 'sway_model_production.pkl')
@@ -642,7 +642,7 @@ def generate_report(models, prediction_times, num_markets, final_r2):
     SWAY MODEL TRAINING REPORT
     ========================================
     
-    Training completed: {time.strftime("%Y-%m-%d %H:%M:%S")}
+    Training completed: {time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}
     Total markets used: {num_markets}
     Final average R²: {final_r2:.4f}
     

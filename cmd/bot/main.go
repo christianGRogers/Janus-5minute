@@ -264,6 +264,7 @@ func main() {
 						log.Printf("❌ Strategy order failed: %v", err)
 					} else {
 						log.Printf("✅ %s Strategy placed %s order: %s @ %.2f x %.0f shares (%s)", strategy.Name(), signal.Side, orderID, signal.Price, signal.Size, signal.Outcome)
+						strategy.OnOrderPlaced(signal.MarketID, signal.Side, signal.Price, signal.Size)
 					}
 				}
 			}
