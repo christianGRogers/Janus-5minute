@@ -342,7 +342,15 @@ func (d *Dashboard) Render() {
 		}
 		trainedStr := "unknown"
 		if m.TrainedAt != "" {
-			trainedStr = m.TrainedAt
+			if t, err := time.Parse("2006-01-02 15:04:05 UTC", m.TrainedAt); err == nil {
+				if eastern, locErr := time.LoadLocation("America/New_York"); locErr == nil {
+					trainedStr = t.In(eastern).Format("2006-01-02 15:04 ET")
+				} else {
+					trainedStr = m.TrainedAt
+				}
+			} else {
+				trainedStr = m.TrainedAt
+			}
 		}
 		fmt.Printf("   Using: %-8s  Markets: %-5d  %-14s  Session: %d preds  Avg Conf: %s\n",
 			m.Name, m.Markets, qualStr, m.PredCount, confStr)
