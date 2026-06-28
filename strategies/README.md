@@ -104,9 +104,24 @@ spot_predict.py                # drop-in, asset-aware alternative to sway_predic
 `sway_predict.py`**, plus an optional `"asset"` field (e.g. `"eth"`), and fetches
 the right Binance 1s spot symbol for the window (the signal that makes the model
 robust). The shipped model is the **universal Combined-GBM** trained on
-BTC+ETH+SOL, so one model serves every market. To adopt it, the Go bot calls
-`spot_predict.py` instead of `sway_predict.py`. Retrain with
-`train_production.py` (mirrors the existing `retrain.py` cadence).
+BTC+ETH+SOL, so one model serves every market.
+
+### Wiring it into the live bot
+
+The integration is **gated behind an env flag, off by default** — live trading
+stays on the sway model unless you opt in. In `pkg/strategies/sway.go`:
+
+```bash
+SWAY_USE_COMBINED=1   # switch predictor+retrainer to the fusion model
+SWAY_ASSET=btc        # asset prefix (default btc); selects the Binance spot symbol
+```
+
+When enabled, the bot calls `strategies/spot_predict.py` for inference and
+`strategies/retrain_combined.py` for retraining (fetches the latest markets +
+spot and trains fresh, mirroring `retrain.py`'s cadence — startup + every 5h +
+on loss). Explicit `SWAY_SCRIPT_PATH` / `SWAY_RETRAIN_SCRIPT` still override.
+To revert, unset `SWAY_USE_COMBINED`. `train_production.py` builds the same model
+offline from cached datasets (used for the report).
 
 ## Strategies
 

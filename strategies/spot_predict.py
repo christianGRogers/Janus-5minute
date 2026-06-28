@@ -60,8 +60,10 @@ def main():
     prices = np.array(data["prices"], dtype=float)
     market_start = int(data["market_start"])
     elapsed = float(data["elapsed"])
-    # asset/symbol: accept "asset" (e.g. "eth") or explicit "symbol"; default BTC
-    symbol = data.get("symbol") or symbol_for(data.get("asset", "btc"))
+    # asset/symbol: accept "asset" (e.g. "eth") or explicit "symbol" in the
+    # payload, else the SWAY_ASSET env var, else default BTC.
+    asset = data.get("asset") or os.getenv("SWAY_ASSET", "btc").split(",")[0].strip()
+    symbol = data.get("symbol") or symbol_for(asset)
 
     with open(MODEL_PATH, "rb") as f:
         art = pickle.load(f)
@@ -88,6 +90,7 @@ def main():
 
     x = np.nan_to_num(np.array([[f.get(k, 0.0) for k in feats]], dtype=float))
     p = float(np.clip(model.predict_proba(x)[0, 1], 0.0, 1.0))
+    meta = art.get("metadata", {})
     json.dump({
         "outcome": "UP" if p > 0.5 else "DOWN",
         "confidence": round(abs(p - 0.5) * 2.0, 4),
@@ -97,6 +100,10 @@ def main():
         "spot_barrier_prob": round(f.get("spot_barrier_prob", 0.5), 4),
         "market_price": round(f.get("last_price", 0.5), 4),
         "model_strategy": art.get("strategy", ""),
+        # model-identity fields (consumed by the Go bot's logging)
+        "model_version": "combined-" + str(meta.get("assets", "")),
+        "model_markets": int(meta.get("trained_on_markets", 0)),
+        "model_training_date": str(meta.get("training_date", "")),
     }, sys.stdout)
 
 
