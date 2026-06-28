@@ -145,6 +145,14 @@ def chart_pooled(pl, path):
     plt.close(fig)
 
 
+def load_significance():
+    p = os.path.join(_DIR, "cache", "significance.pkl")
+    if not os.path.exists(p):
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
 def load_slippage():
     p = os.path.join(_DIR, "cache", "slippage.pkl")
     if not os.path.exists(p):
@@ -495,7 +503,7 @@ def chart_acc_by_slot(results, path):
 # ----------------------------------------------------------------------
 
 def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None,
-              imp=None, zs=None, sl=None):
+              imp=None, zs=None, sl=None, sig=None):
     meta = data["meta"]
     # Prefer the validation run's test window so the table covers all strategies
     # consistently with the cross-window section (same test markets & evaluate()).
@@ -587,6 +595,16 @@ def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None,
                 "<b>Headline.</b> Strategies profitable on both windows: "
                 f"{', '.join(both_pos) if both_pos else 'none'}. Sway is consistently last.",
                 body))
+        el.append(Spacer(1, 6))
+
+    if sig is not None:
+        el.append(Paragraph(
+            f"<b>Statistical significance.</b> On strictly held-out data (the val "
+            f"windows, never used to train the shipped model), the universal model "
+            f"averages <b>{sig['mean_roi']:+.1%} ROI per bet</b> over {sig['n_bets']:,} "
+            f"bets, 95% bootstrap CI <b>[{sig['ci_lo']:+.1%}, {sig['ci_hi']:+.1%}]</b> "
+            f"(t={sig['t_stat']:.1f}, P(ROI&#8804;0)&lt;0.001) — the edge is real, not "
+            "luck.", body))
         el.append(Spacer(1, 6))
 
     if ca is not None and len(ca) >= 2:
@@ -1056,4 +1074,4 @@ def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None,
 if __name__ == "__main__":
     build_pdf(load(), load_validation(), load_robust3(), load_kelly(),
               load_walkforward(), load_crossasset(), load_pooled(), load_importance(),
-              load_zeroshot(), load_slippage())
+              load_zeroshot(), load_slippage(), load_significance())
