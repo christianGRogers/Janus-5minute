@@ -56,6 +56,45 @@ def load_robust3():
         return pickle.load(f)
 
 
+def load_kelly():
+    p = os.path.join(_DIR, "cache", "kelly.pkl")
+    if not os.path.exists(p):
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
+def chart_kelly(kelly, path):
+    """Bankroll curves (log scale) for each window, plus a growth-multiple table feel."""
+    res = kelly["results"]
+    wn = ["test", "val", "oos3"]
+    feat = [n for n in ["Combined-Logistic", "LogisticMicro", "SpotBarrier",
+                        "TemperedBarrier(w=0.5)", "Sway (baseline)"] if n in res]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4.2), sharey=True)
+    colmap = {"Combined-Logistic": "#1f77b4", "LogisticMicro": "#2ca02c",
+              "SpotBarrier": "#9467bd", "TemperedBarrier(w=0.5)": "#ff7f0e",
+              "Sway (baseline)": "#d62728"}
+    for ax, w in zip(axes, wn):
+        for n in feat:
+            curve = res[n][w]["curve"]
+            ax.plot(curve, label=n, color=colmap.get(n),
+                    lw=2.0 if n == "Sway (baseline)" else 1.4,
+                    ls="--" if n == "Sway (baseline)" else "-")
+        ax.axhline(kelly["params"]["start"], color="gray", lw=0.7)
+        ax.set_yscale("log")
+        ax.set_title(f"{w} window")
+        ax.set_xlabel("bet #")
+        ax.grid(alpha=0.3, which="both")
+    axes[0].set_ylabel("bankroll $ (log)")
+    axes[-1].legend(fontsize=7, loc="lower left")
+    p = kelly["params"]
+    fig.suptitle(f"Fractional-Kelly bankroll growth ({p['kelly_frac']}x Kelly, "
+                 f"{p['max_bet_frac']:.0%} cap, ${p['start']:.0f} start)", y=1.02)
+    plt.tight_layout()
+    fig.savefig(path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+
+
 # ----------------------------------------------------------------------
 # Charts
 # ----------------------------------------------------------------------
@@ -243,7 +282,7 @@ def chart_acc_by_slot(results, path):
 # PDF
 # ----------------------------------------------------------------------
 
-def build_pdf(data, val=None, r3=None):
+def build_pdf(data, val=None, r3=None, kelly=None):
     meta = data["meta"]
     # Prefer the validation run's test window so the table covers all strategies
     # consistently with the cross-window section (same test markets & evaluate()).
@@ -481,6 +520,49 @@ def build_pdf(data, val=None, r3=None):
             "over-relying on any single period. The spot signal is valuable, but must be "
             "tempered with the crowd price rather than trusted outright.", body))
 
+    # ---- Money management / bankroll ----
+    if kelly is not None:
+        res = kelly["results"]; p = kelly["params"]; wn = ["test", "val", "oos3"]
+        c7 = os.path.join(cdir, "_c_kelly.png")
+        chart_kelly(kelly, c7)
+        el.append(PageBreak())
+        el.append(Paragraph("Money Management — bankroll growth &amp; ruin", h2))
+        el.append(Paragraph(
+            f"Per-bet ROI ignores compounding and risk. Here each strategy plays its "
+            f"bets in time order with conservative fractional-Kelly sizing "
+            f"({p['kelly_frac']}x Kelly, {p['max_bet_frac']:.0%} max stake, "
+            f"${p['start']:.0f} start). The robust strategies compound positively on "
+            f"all three windows; the <b>Sway baseline is driven to ruin</b> "
+            f"(bankroll &#8594; ~$0) on two of three.", body))
+        el.append(Spacer(1, 4))
+        rows = [["Strategy"] + [f"{w} final" for w in wn] + ["worst maxDD"]]
+        order = sorted(res.keys(), key=lambda n: -min(res[n][w]["mult"] for w in wn))
+        for n in order:
+            finals = [res[n][w]["final"] for w in wn]
+            dd = max(res[n][w]["max_dd_pct"] for w in wn)
+            rows.append([n] + [f"${v:,.0f} ({res[n][w]['mult']:.1f}x)"
+                               for v, w in zip(finals, wn)] + [f"{dd:.0%}"])
+        tk = Table(rows, repeatRows=1, hAlign="LEFT")
+        stk = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#34495e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ]
+        for i, n in enumerate(order, start=1):
+            if n == "Sway (baseline)":
+                stk.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#fde0dc")))
+        tk.setStyle(TableStyle(stk))
+        el.append(tk)
+        el.append(Spacer(1, 6))
+        el.append(Image(c7, width=7.2 * inch, height=2.52 * inch))
+        el.append(Spacer(1, 4))
+        el.append(Paragraph(
+            "<i>Caveat: drawdowns are large (40-60%) — this edge is real but noisy, "
+            "so position sizing must stay conservative. LogisticMicro has the gentlest "
+            "drawdown; Combined-Logistic the highest growth.</i>", body))
+
     el.append(PageBreak())
     el.append(Paragraph("Methodology", h2))
     el.append(Paragraph(
@@ -505,4 +587,4 @@ def build_pdf(data, val=None, r3=None):
 
 
 if __name__ == "__main__":
-    build_pdf(load(), load_validation(), load_robust3())
+    build_pdf(load(), load_validation(), load_robust3(), load_kelly())

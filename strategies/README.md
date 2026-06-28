@@ -53,8 +53,15 @@ models.py           # prediction-market strategies + the Sway baseline
 models_spot.py      # spot-driven strategies (SpotBarrier, Combined-*, etc.)
 backtest_harness.py # train all on train_set, evaluate on test_set, P&L sim
 validate.py         # cross-window robustness: evaluate on test AND val windows
+robustness3.py      # decisive 3-window test (test/val/oos3) for headline strategies
+kelly_sim.py        # fractional-Kelly bankroll growth / ruin simulation
 make_report.py      # render STRATEGY_REPORT.pdf
 ```
+
+Money management: a conservative fractional-Kelly bankroll sim (0.1x Kelly) has
+the robust strategies compounding positively on all three windows, while
+**Kelly-betting the Sway model goes to ruin** (bankroll → ~$0) — see the
+"Money Management" page of the report.
 
 ### Reproduce
 
