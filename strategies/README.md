@@ -83,6 +83,22 @@ Data is cached under `cache/` so re-runs are instant. Train and test sets are
 **time-disjoint** (train on older markets, test on more recent) — realistic
 train-on-past / predict-future evaluation with no look-ahead.
 
+## Deployment
+
+The recommended robust model is shipped as a self-contained predictor:
+
+```
+train_production.py            # trains Combined-Logistic on freshest markets
+combined_model_production.pkl  # the saved artifact (82 features)
+spot_predict.py                # drop-in alternative to sway_predict.py
+```
+
+`spot_predict.py` uses the **same stdin/stdout JSON contract as
+`sway_predict.py`** but additionally fetches live Binance BTCUSDT 1s spot for the
+window (the signal that makes the model robust). To adopt it, the Go bot would
+call `spot_predict.py` instead of `sway_predict.py`. Retrain periodically with
+`train_production.py` (mirrors the existing `retrain.py` cadence).
+
 ## Strategies
 
 - **MarketPrice** — predict the current UP-token price (crowd consensus).
