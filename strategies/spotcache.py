@@ -31,6 +31,16 @@ HOSTS = ["https://api.binance.com", "https://data-api.binance.vision"]
 import threading
 _local = threading.local()
 
+# Polymarket asset prefix -> Binance spot symbol
+ASSET_SYMBOL = {
+    "btc": "BTCUSDT", "eth": "ETHUSDT", "sol": "SOLUSDT",
+    "xrp": "XRPUSDT", "doge": "DOGEUSDT", "bnb": "BNBUSDT",
+}
+
+
+def symbol_for(asset):
+    return ASSET_SYMBOL.get(str(asset).lower(), "BTCUSDT")
+
 
 def _sess():
     if not hasattr(_local, "s"):
@@ -38,19 +48,22 @@ def _sess():
     return _local.s
 
 
-def _path(market_start):
-    return os.path.join(SPOT_DIR, f"{market_start}.pkl.gz")
+def _path(market_start, symbol="BTCUSDT"):
+    # BTC keeps the legacy bare filename for backward compatibility; others are prefixed.
+    if symbol == "BTCUSDT":
+        return os.path.join(SPOT_DIR, f"{market_start}.pkl.gz")
+    return os.path.join(SPOT_DIR, f"{symbol}_{market_start}.pkl.gz")
 
 
-def fetch_spot(market_start, force=False, tries=4):
-    p = _path(market_start)
+def fetch_spot(market_start, force=False, tries=4, symbol="BTCUSDT"):
+    p = _path(market_start, symbol)
     if os.path.exists(p) and not force:
         try:
             with gzip.open(p, "rb") as f:
                 return pickle.load(f)
         except Exception:
             pass
-    params = {"symbol": "BTCUSDT", "interval": "1s",
+    params = {"symbol": symbol, "interval": "1s",
               "startTime": market_start * 1000, "endTime": (market_start + 300) * 1000}
     for attempt in range(tries):
         host = HOSTS[attempt % len(HOSTS)]
@@ -78,12 +91,12 @@ def fetch_spot(market_start, force=False, tries=4):
 def build_spot_cache(markets, max_workers=8, label="spot"):
     """Fetch + cache spot series for every market dict; returns dict[market_start]=rec."""
     out = {}
-    todo = [m["market_start"] for m in markets]
+    todo = [(m["market_start"], symbol_for(m.get("asset", "btc"))) for m in markets]
     print(f"[{label}] fetching spot for {len(todo)} windows ({max_workers} workers)...")
     t0 = time.time()
     done = 0
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(fetch_spot, ms): ms for ms in todo}
+        futs = {ex.submit(fetch_spot, ms, False, 4, sym): ms for ms, sym in todo}
         for fut in as_completed(futs):
             ms = futs[fut]
             rec = fut.result()
@@ -101,7 +114,7 @@ def load_spot_for(markets):
     out = {}
     for m in markets:
         ms = m["market_start"]
-        p = _path(ms)
+        p = _path(ms, symbol_for(m.get("asset", "btc")))
         if os.path.exists(p):
             try:
                 with gzip.open(p, "rb") as f:

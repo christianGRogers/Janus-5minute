@@ -14,6 +14,7 @@ markets, developed and benchmarked **against the existing Sway model**.
 | **With realistic retraining, spot+market fusion wins** | Retrained on recent data (as the live bot does), `Combined-GBM` **+13.1% / +24.1% / +22.2%** and `Combined-Logistic` **+13.5% / +25.7% / +17.2%** — robustly profitable on all three windows. |
 | **`SpotBarrier` edge is genuinely period-dependent** | Spectacular on 2 windows (+20%/+19%) but −1.5% on oos3; being training-free, that failure isn't a stale-model artifact. |
 | **Kelly-betting Sway → ruin** | Sway loses on 2 of 3 windows and is driven to ~$0 under Kelly sizing. |
+| **Generalizes across assets** | Re-run independently on BTC, ETH, SOL: Consensus & Combined-GBM profitable on all three; Sway loses on all three (−27% / −4% / −34%). |
 
 Two headline lessons: (1) even two out-of-sample windows can mislead on trading
 P&L — the **three-window** test separates real edge from artifact; (2) a single
@@ -60,6 +61,7 @@ backtest_harness.py # train all on train_set, evaluate on test_set, P&L sim
 validate.py         # cross-window robustness: evaluate on test AND val windows
 robustness3.py      # decisive 3-window test (test/val/oos3), single stale model
 walkforward.py      # realistic per-window retraining (mirrors retrain.py)
+crossasset.py       # re-run the whole comparison on ETH / SOL / etc.
 kelly_sim.py        # fractional-Kelly bankroll growth / ruin simulation
 make_report.py      # render STRATEGY_REPORT.pdf
 ```

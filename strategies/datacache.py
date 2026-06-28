@@ -158,6 +158,7 @@ def fetch_market(slug, force=False):
 
     mkt = {
         "slug": slug,
+        "asset": slug.split("-")[0],
         "market_start": market_start,
         "actual_price": actual_price,
         "actual_bin": 1.0 if actual_price >= 0.5 else 0.0,
