@@ -54,6 +54,60 @@ class SpotBarrier:
         return float(np.clip(f["spot_barrier_prob"], 0.0, 1.0))
 
 
+class SpotBarrierDrift:
+    """
+    Barrier probability with a drift term: the pure random-walk model assumes
+    zero drift, but recent spot momentum carries information. Estimate per-second
+    drift from the last 30s and project it over the remaining time.
+    P(UP) = Phi( (lead + drift*t_rem) / (sigma*sqrt(t_rem)) ).
+    """
+    name = "SpotBarrierDrift"
+
+    def __init__(self, drift_k=0.5):
+        self.drift_k = drift_k
+
+    def fit(self, markets):
+        return self
+
+    def predict(self, market, elapsed, remaining):
+        from math import sqrt
+        f = extract_spot_features(market, elapsed)
+        if f is None:
+            return None
+        lead = f["spot_cur_minus_open"]
+        sigma = f["spot_sigma_recent"] or f["spot_sigma_s"]
+        t_rem = max(1.0, f["time_remaining"])
+        drift_per_s = self.drift_k * (f["spot_mom_30"] / 30.0)
+        denom = sigma * sqrt(t_rem)
+        if denom <= 1e-9:
+            return 1.0 if (lead + drift_per_s * t_rem) > 0 else 0.0
+        z = (lead + drift_per_s * t_rem) / denom
+        return float(np.clip(_phi_np(z), 0.0, 1.0))
+
+
+def _phi_np(z):
+    from math import erf, sqrt as _sq
+    return 0.5 * (1.0 + erf(float(np.clip(z, -50, 50)) / _sq(2.0)))
+
+
+class SpotBarrierLate(SpotBarrier):
+    """
+    SpotBarrier restricted to the late slots (<= max_remaining s). With little
+    time left, the spot lead is highly predictive yet the crowd still prices in
+    residual caution -> the edge is largest and most consistent here. Returns
+    None (no bet) for earlier slots.
+    """
+    name = "SpotBarrier-Late"
+
+    def __init__(self, max_remaining=20):
+        self.max_remaining = max_remaining
+
+    def predict(self, market, elapsed, remaining):
+        if remaining > self.max_remaining:
+            return None
+        return super().predict(market, elapsed, remaining)
+
+
 class SpotBarrierCal:
     """Barrier prob passed through a learned 1-feature logistic (fixes ref offset/scale)."""
     name = "SpotBarrierCal"
@@ -153,3 +207,39 @@ class CombinedGBM(_SpotMLBase):
         return GradientBoostingClassifier(
             n_estimators=350, max_depth=3, learning_rate=0.03, subsample=0.8,
             random_state=42)
+
+
+class SpotEdgeGBM:
+    """
+    Predict the crowd's error (actual - market_price) from spot + market features.
+    Spot info is orthogonal to the crowd price, so this directly targets where the
+    market is mispriced. Final P(UP) = clip(market_price + predicted_residual).
+    """
+    name = "SpotEdge-GBM"
+
+    def __init__(self):
+        self.model = None
+        self.feature_names = None
+
+    def fit(self, markets):
+        from sklearn.ensemble import GradientBoostingRegressor
+        X, y, _ = build_training_table(markets, extract_combined_features)
+        self.feature_names = list(X.columns)
+        price = X["last_price"].values if "last_price" in X.columns else np.full(len(X), 0.5)
+        resid = y - price
+        self.model = GradientBoostingRegressor(
+            n_estimators=300, max_depth=3, learning_rate=0.02, subsample=0.8,
+            random_state=42)
+        self.model.fit(X.fillna(0.0).values, resid)
+        return self
+
+    def predict(self, market, elapsed, remaining):
+        if self.model is None:
+            return None
+        f = extract_combined_features(market, elapsed)
+        if f is None:
+            return None
+        x = np.nan_to_num(np.array([[f.get(k, 0.0) for k in self.feature_names]], dtype=float))
+        resid = float(self.model.predict(x)[0])
+        price = f.get("last_price", 0.5)
+        return float(np.clip(price + resid, 0.0, 1.0))

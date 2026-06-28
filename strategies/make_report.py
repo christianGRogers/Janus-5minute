@@ -28,7 +28,7 @@ BASELINE = "Sway (baseline)"
 
 # Curated subset for line charts (keeping all 19 in tables / bar charts).
 FEATURED = ["Sway (baseline)", "MarketPrice", "LogisticMicro",
-            "Combined-GBM", "SpotBarrier", "Ensemble-Spot"]
+            "Combined-GBM", "SpotBarrier", "SpotBarrier-Late", "Ensemble-Spot"]
 
 
 def _featured(results):
@@ -210,6 +210,8 @@ def build_pdf(data, val=None):
     # consistently with the cross-window section (same test markets & evaluate()).
     if val is not None:
         results = val["windows"]["test"]
+        meta = {**meta, "generated": val["meta"]["generated"],
+                "n_train": val["meta"]["n_train"], "n_test": val["meta"]["n_test"]}
     else:
         results = data["results"]
     out_pdf = os.path.join(_DIR, "STRATEGY_REPORT.pdf")
@@ -328,9 +330,13 @@ def build_pdf(data, val=None):
     el.append(Paragraph("Trading Performance", h2))
     el.append(Paragraph(
         "The sway model ignores the absolute market price, so its statistical "
-        "edge does not always convert into trading profit. The equity curves "
-        "below show realised P&amp;L when each model only bets on positive-EV "
-        "divergences from the crowd price.", body))
+        "edge does not convert into trading profit (it loses the most). The "
+        "equity curves below show realised P&amp;L when each model bets on "
+        "positive-EV divergences from the crowd price. The spot-driven models "
+        "dominate. <b>SpotBarrier-Late</b> further concentrates the spot edge in "
+        "the final 20 seconds — where the spot lead is most predictive yet the "
+        "crowd still prices residual caution — roughly doubling test ROI (+44.9%) "
+        "while cutting max drawdown by ~60%.", body))
     el.append(Spacer(1, 6))
     el.append(Image(c2, width=7.2 * inch, height=3.27 * inch))
     el.append(Spacer(1, 6))

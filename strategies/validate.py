@@ -23,8 +23,8 @@ from models import (
     BlendStrategy,
 )
 from models_spot import (
-    attach_spot, SpotBarrier, SpotLogistic, SpotGBM,
-    CombinedLogistic, CombinedGBM,
+    attach_spot, SpotBarrier, SpotBarrierLate, SpotBarrierDrift, SpotEdgeGBM,
+    SpotLogistic, SpotGBM, CombinedLogistic, CombinedGBM,
 )
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +37,8 @@ def build_strategies(train):
         GBMRich(), RandomForestRich(), XGBRich(), LGBMRich(),
         EdgeGBM(), EdgeRidge(), CalibratedXGB(),
         # spot-driven (use the underlying BTC price)
-        SpotBarrier(), SpotLogistic(), SpotGBM(),
+        SpotBarrier(), SpotBarrierLate(max_remaining=20), SpotBarrierDrift(),
+        SpotEdgeGBM(), SpotLogistic(), SpotGBM(),
         CombinedLogistic(), CombinedGBM(),
     ]
     fitted = []
