@@ -108,20 +108,20 @@ BTC+ETH+SOL, so one model serves every market.
 
 ### Wiring it into the live bot
 
-The integration is **gated behind an env flag, off by default** — live trading
-stays on the sway model unless you opt in. In `pkg/strategies/sway.go`:
-
-```bash
-SWAY_USE_COMBINED=1   # switch predictor+retrainer to the fusion model
-SWAY_ASSET=btc        # asset prefix (default btc); selects the Binance spot symbol
-```
-
-When enabled, the bot calls `strategies/spot_predict.py` for inference and
+The fusion model is the **live default** in `pkg/strategies/sway.go`. The bot
+calls `strategies/spot_predict.py` for inference and
 `strategies/retrain_combined.py` for retraining (fetches the latest markets +
 spot and trains fresh, mirroring `retrain.py`'s cadence — startup + every 5h +
-on loss). Explicit `SWAY_SCRIPT_PATH` / `SWAY_RETRAIN_SCRIPT` still override.
-To revert, unset `SWAY_USE_COMBINED`. `train_production.py` builds the same model
-offline from cached datasets (used for the report).
+on loss).
+
+```bash
+SWAY_ASSET=btc        # asset prefix (default btc); selects the Binance spot symbol
+SWAY_USE_LEGACY=1     # fall back to the original sway model
+```
+
+Explicit `SWAY_SCRIPT_PATH` / `SWAY_RETRAIN_SCRIPT` still override either default.
+`train_production.py` builds the same model offline from cached datasets (used
+for the report).
 
 ## Strategies
 

@@ -106,10 +106,11 @@ type SwayStrategy struct {
 // Environment variables:
 //
 //	SWAY_PYTHON_BIN     – python executable (default: python3)
-//	SWAY_USE_COMBINED   – "1"/"true" to use the spot+market fusion model
+//	SWAY_USE_LEGACY     – "1"/"true" to fall back to the original sway model
+//	                      (sway_model/sway_predict.py + retrain.py). By default
+//	                      the live strategy uses the spot+market fusion model
 //	                      (strategies/spot_predict.py + retrain_combined.py).
-//	                      Off by default; live trading stays on the sway model.
-//	SWAY_SCRIPT_PATH    – override predictor path (wins over SWAY_USE_COMBINED)
+//	SWAY_SCRIPT_PATH    – override predictor path (wins over SWAY_USE_LEGACY)
 //	SWAY_RETRAIN_SCRIPT – override retrain script path
 //	SWAY_ASSET          – asset prefix for the predictor, e.g. "btc" (default: btc)
 func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
@@ -118,19 +119,20 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		pythonBin = "python3"
 	}
 
-	// SWAY_USE_COMBINED flips the default predictor/retrainer to the spot+market
-	// fusion model (the strategy-research winner). Off by default → live trading
-	// stays on the sway model. Explicit SWAY_SCRIPT_PATH/SWAY_RETRAIN_SCRIPT
-	// overrides still win.
-	useCombined := os.Getenv("SWAY_USE_COMBINED") == "1" ||
-		strings.EqualFold(os.Getenv("SWAY_USE_COMBINED"), "true")
+	// The spot+market fusion model (the strategy-research winner) is the live
+	// default. Set SWAY_USE_LEGACY=1 to fall back to the original sway model.
+	// Explicit SWAY_SCRIPT_PATH/SWAY_RETRAIN_SCRIPT overrides still win.
+	useLegacy := os.Getenv("SWAY_USE_LEGACY") == "1" ||
+		strings.EqualFold(os.Getenv("SWAY_USE_LEGACY"), "true")
 
-	defaultScript := "sway_model/sway_predict.py"
-	defaultRetrain := "sway_model/retrain.py"
-	if useCombined {
-		defaultScript = "strategies/spot_predict.py"
-		defaultRetrain = "strategies/retrain_combined.py"
-		log.Printf("[Sway] SWAY_USE_COMBINED enabled — using spot+market fusion model")
+	defaultScript := "strategies/spot_predict.py"
+	defaultRetrain := "strategies/retrain_combined.py"
+	if useLegacy {
+		defaultScript = "sway_model/sway_predict.py"
+		defaultRetrain = "sway_model/retrain.py"
+		log.Printf("[Sway] SWAY_USE_LEGACY enabled — using legacy sway model")
+	} else {
+		log.Printf("[Sway] Using spot+market fusion model (Combined-GBM)")
 	}
 
 	scriptPath := os.Getenv("SWAY_SCRIPT_PATH")
