@@ -9,13 +9,13 @@ markets, developed and benchmarked **against the existing Sway model**.
 |---|---|
 | **Sway model is the weakest** | 77.4% accuracy, Brier 0.153 — far below every candidate and below just trusting the market price (89.0%). |
 | **Sway loses money badly** | −27.3% trading ROI (−$243 over 890 bets). It bets the *most* because it diverges from the crowd price most often — and it is usually wrong. |
-| **Single-window trading ROI is mostly noise** | Re-tested on a 2nd independent window, most prediction-market strategies flip sign. Only careful ones survive. |
-| **The breakthrough: read the underlying BTC spot** | The market resolves on whether BTC closes up/down — so the actual Binance spot price (which the crowd prices imperfectly) is a huge orthogonal signal. |
-| **Best strategy: `SpotBarrier`** | Analytic first-passage probability from spot lead + realised vol. **+20.6% / +18.6% ROI** across both windows, *no training*. |
-| **`Ensemble-Spot`** | Blend of spot strategies: **+20.5% / +24.0% ROI** — best worst-case. |
+| **Trading ROI needs THREE windows to trust** | On 2 windows the spot-barrier models look like clear winners (+20% each). A 3rd, older window shows that edge is partly period-specific — it disappears there. |
+| **Read the underlying BTC spot** | The market resolves on whether BTC closes up/down, so the Binance spot price (which the crowd prices imperfectly) is a powerful orthogonal signal — but it must be tempered with the crowd price, not trusted outright. |
+| **Genuinely robust winners (positive on all 3 windows)** | `Combined-Logistic` **+13.5% / +22.6% / +8.1%** (regularised spot+market fusion) and `LogisticMicro` **+3.3% / +7.8% / +7.1%**. |
+| **`SpotBarrier`** | Spectacular on 2 windows (+20%/+19%) but −1.5% on oos3 — the cautionary tale. |
 
-Robustly profitable on **both** independent windows: `SpotBarrier`,
-`Ensemble-Spot`, `Combined-Logistic`, `Combined-GBM`, `LogisticMicro`.
+The headline lesson: even two out-of-sample windows can mislead on trading P&L;
+the **three-window** test is what separates a real edge from an artifact.
 
 See **`STRATEGY_REPORT.pdf`** for the full comparison with charts.
 

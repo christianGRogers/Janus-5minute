@@ -48,6 +48,14 @@ def load_validation():
         return pickle.load(f)
 
 
+def load_robust3():
+    p = os.path.join(_DIR, "cache", "robustness3.pkl")
+    if not os.path.exists(p):
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
 # ----------------------------------------------------------------------
 # Charts
 # ----------------------------------------------------------------------
@@ -145,6 +153,37 @@ def chart_margin_sweep(results, path):
     plt.close(fig)
 
 
+def chart_robust3(r3, path):
+    """Grouped horizontal bars: ROI across three independent windows per strategy."""
+    wnames = ["test", "val", "oos3"]
+    names = sorted(r3.keys(), key=lambda n: -min(r3[n][w]["roi"] for w in wnames))
+    y = np.arange(len(names))
+    h = 0.26
+    cols = {"test": "#1b9e77", "val": "#7570b3", "oos3": "#d95f02"}
+    fig, ax = plt.subplots(figsize=(11, 6.2))
+    for i, w in enumerate(wnames):
+        vals = [r3[n][w]["roi"] for n in names]
+        ax.barh(y + (1 - i) * h, vals, h, label=f"{w} window", color=cols[w])
+    ax.axvline(0, color="black", lw=0.9)
+    ax.set_yticks(y)
+    ax.set_yticklabels(names, fontsize=9)
+    ax.invert_yaxis()
+    ax.set_title("Trading ROI across THREE independent windows (all-positive = robust edge)")
+    ax.set_xlabel("ROI")
+    ax.legend(fontsize=9, loc="lower right")
+    # mark strategies positive on all three
+    for n, yy in zip(names, y):
+        allpos = all(r3[n][w]["roi"] > 0 and r3[n][w]["n_bets"] > 10 for w in wnames)
+        if allpos:
+            ax.get_yticklabels()[list(names).index(n)].set_color("#2ca02c")
+            ax.get_yticklabels()[list(names).index(n)].set_fontweight("bold")
+        if n == "Sway (baseline)":
+            ax.get_yticklabels()[list(names).index(n)].set_color("#d62728")
+    plt.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 def chart_validation(val, path):
     """Side-by-side test vs val for accuracy and ROI across two windows."""
     tw = val["windows"]["test"]
@@ -204,7 +243,7 @@ def chart_acc_by_slot(results, path):
 # PDF
 # ----------------------------------------------------------------------
 
-def build_pdf(data, val=None):
+def build_pdf(data, val=None, r3=None):
     meta = data["meta"]
     # Prefer the validation run's test window so the table covers all strategies
     # consistently with the cross-window section (same test markets & evaluate()).
@@ -265,19 +304,34 @@ def build_pdf(data, val=None):
                     and tw[n]["trading"]["roi"] > 0 and vw[n]["trading"]["roi"] > 0]
         # rank robust winners by worst-case (min) ROI across the two windows
         both_pos.sort(key=lambda n: -min(tw[n]["trading"]["roi"], vw[n]["trading"]["roi"]))
-        champ = both_pos[0] if both_pos else None
-        champ_txt = (f"<b>{champ}</b> (+{tw[champ]['trading']['roi']:.1%} test / "
-                     f"+{vw[champ]['trading']['roi']:.1%} val)") if champ else "none"
-        el.append(Paragraph(
-            "<b>Headline result.</b> The biggest edge comes from a signal the "
-            "prediction-market models never use: the <b>underlying BTC spot price</b> "
-            "(Binance 1s data). A purely analytic first-passage 'barrier' probability "
-            "computed from the live spot lead and realised volatility is the strongest "
-            "trader. Crucially, it is re-tested on a second independent window — where "
-            "most strategies' trading ROI flips sign (noise). The strategies "
-            f"profitable on <b>both</b> windows are: {', '.join(both_pos) if both_pos else 'none'}. "
-            f"Most robust (best worst-case ROI): {champ_txt}. Statistical accuracy "
-            "ranking is stable throughout: the Sway baseline is consistently last.", body))
+        if r3 is not None:
+            wn = ["test", "val", "oos3"]
+            allpos = [n for n in r3
+                      if all(r3[n][w]["roi"] > 0 and r3[n][w]["n_bets"] > 10 for w in wn)]
+            allpos.sort(key=lambda n: -min(r3[n][w]["roi"] for w in wn))
+            champ = allpos[0] if allpos else None
+            champ_txt = (f"<b>{champ}</b> ("
+                         + " / ".join(f"+{r3[champ][w]['roi']:.1%}" for w in wn)
+                         + " across test/val/oos3)") if champ else "none"
+            el.append(Paragraph(
+                "<b>Headline result (after three independent windows).</b> Reading the "
+                "<b>underlying BTC spot price</b> (Binance 1s data) — which the "
+                "prediction-market models never see — produces a large trading edge: an "
+                "analytic first-passage 'barrier' probability returns +20% on two "
+                "windows. <b>But a third, older window exposes it as partly "
+                "period-specific</b> (it goes slightly negative there) — a reminder that "
+                "even two-window results can mislead. The only strategies profitable on "
+                f"<b>all three</b> windows are: {', '.join(allpos) if allpos else 'none'}. "
+                f"Most robust: {champ_txt} — a regularised fusion of spot and "
+                "prediction-market features, and the recommended live candidate. "
+                "Throughout, the Sway baseline is the weakest model and loses money on "
+                "two of three windows.", body))
+        else:
+            champ = both_pos[0] if both_pos else None
+            el.append(Paragraph(
+                "<b>Headline.</b> Strategies profitable on both windows: "
+                f"{', '.join(both_pos) if both_pos else 'none'}. Sway is consistently last.",
+                body))
         el.append(Spacer(1, 6))
 
     # main metrics table
@@ -374,6 +428,59 @@ def build_pdf(data, val=None):
         el.append(Spacer(1, 6))
         el.append(Image(c5, width=6.7 * inch, height=4.57 * inch))
 
+    # ---- Three-window robustness (the decisive test) ----
+    if r3 is not None:
+        wn = ["test", "val", "oos3"]
+        allpos = [n for n in r3
+                  if all(r3[n][w]["roi"] > 0 and r3[n][w]["n_bets"] > 10 for w in wn)]
+        allpos.sort(key=lambda n: -min(r3[n][w]["roi"] for w in wn))
+        c6 = os.path.join(cdir, "_c_robust3.png")
+        chart_robust3(r3, c6)
+        el.append(PageBreak())
+        el.append(Paragraph("Three-Window Robustness — the decisive test", h2))
+        el.append(Paragraph(
+            "Two windows are not enough. The spot-barrier strategies looked like clear "
+            "winners on the test and val windows (~+20% ROI each), but a <b>third</b> "
+            "independent and older window (oos3, 300 markets) tells a different story: "
+            "their edge largely disappears there. This is the single most important "
+            "result in the study — a strategy must clear <i>all three</i> windows to be "
+            "trusted.", body))
+        el.append(Spacer(1, 4))
+        rows = [["Strategy", "test ROI", "val ROI", "oos3 ROI", "min ROI", "all +?"]]
+        order = sorted(r3.keys(), key=lambda n: -min(r3[n][w]["roi"] for w in wn))
+        for n in order:
+            rois = [r3[n][w]["roi"] for w in wn]
+            ap = all(r > 0 for r in rois) and all(r3[n][w]["n_bets"] > 10 for w in wn)
+            rows.append([n] + [f"{r:+.1%}" for r in rois]
+                        + [f"{min(rois):+.1%}", "YES" if ap else ""])
+        t3 = Table(rows, repeatRows=1, hAlign="LEFT")
+        st = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#34495e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ]
+        for i, n in enumerate(order, start=1):
+            rois = [r3[n][w]["roi"] for w in wn]
+            if all(r > 0 for r in rois) and all(r3[n][w]["n_bets"] > 10 for w in wn):
+                st.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#d9f2d9")))
+                st.append(("FONTNAME", (0, i), (-1, i), "Helvetica-Bold"))
+            if n == "Sway (baseline)":
+                st.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#fde0dc")))
+        t3.setStyle(TableStyle(st))
+        el.append(t3)
+        el.append(Spacer(1, 6))
+        el.append(Image(c6, width=7.0 * inch, height=3.95 * inch))
+        el.append(Spacer(1, 4))
+        el.append(Paragraph(
+            f"<b>Conclusion:</b> the only strategies profitable on all three windows are "
+            f"<b>{', '.join(allpos) if allpos else 'none'}</b>. "
+            "The recommended live candidate is the top of that list — a regularised "
+            "blend of spot and prediction-market features that keeps a real edge without "
+            "over-relying on any single period. The spot signal is valuable, but must be "
+            "tempered with the crowd price rather than trusted outright.", body))
+
     el.append(PageBreak())
     el.append(Paragraph("Methodology", h2))
     el.append(Paragraph(
@@ -398,4 +505,4 @@ def build_pdf(data, val=None):
 
 
 if __name__ == "__main__":
-    build_pdf(load(), load_validation())
+    build_pdf(load(), load_validation(), load_robust3())
