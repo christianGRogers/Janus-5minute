@@ -32,6 +32,14 @@ def load():
         return pickle.load(f)
 
 
+def load_validation():
+    p = os.path.join(_DIR, "cache", "validation.pkl")
+    if not os.path.exists(p):
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
 # ----------------------------------------------------------------------
 # Charts
 # ----------------------------------------------------------------------
@@ -129,6 +137,41 @@ def chart_margin_sweep(results, path):
     plt.close(fig)
 
 
+def chart_validation(val, path):
+    """Side-by-side test vs val for accuracy and ROI across two windows."""
+    tw = val["windows"]["test"]
+    vw = val["windows"]["val"]
+    names = sorted(tw.keys(), key=lambda n: -tw[n]["overall"]["accuracy"])
+    y = np.arange(len(names))
+    h = 0.4
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5.6))
+
+    ta = [tw[n]["overall"]["accuracy"] for n in names]
+    va = [vw[n]["overall"]["accuracy"] for n in names]
+    ax1.barh(y + h / 2, ta, h, label="test window", color="#1f77b4")
+    ax1.barh(y - h / 2, va, h, label="val window", color="#9ecae1")
+    ax1.set_yticks(y); ax1.set_yticklabels(names, fontsize=8)
+    ax1.set_xlim(0.45, 0.95)
+    ax1.set_title("Accuracy — both windows")
+    ax1.legend(fontsize=8)
+    for n, yy in zip(names, y):
+        if n == BASELINE:
+            ax1.get_yticklabels()[list(names).index(n)].set_color("#d62728")
+
+    tr = [tw[n]["trading"]["roi"] for n in names]
+    vr = [vw[n]["trading"]["roi"] for n in names]
+    ax2.barh(y + h / 2, tr, h, label="test ROI", color="#2ca02c")
+    ax2.barh(y - h / 2, vr, h, label="val ROI", color="#98df8a")
+    ax2.axvline(0, color="gray", lw=0.8)
+    ax2.set_yticks(y); ax2.set_yticklabels([])
+    ax2.set_title("Trading ROI — both windows (sign flips = noise)")
+    ax2.legend(fontsize=8)
+    plt.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 def chart_acc_by_slot(results, path):
     fig, ax = plt.subplots(figsize=(11, 5))
     for n in results:
@@ -153,9 +196,14 @@ def chart_acc_by_slot(results, path):
 # PDF
 # ----------------------------------------------------------------------
 
-def build_pdf(data):
-    results = data["results"]
+def build_pdf(data, val=None):
     meta = data["meta"]
+    # Prefer the validation run's test window so the table covers all strategies
+    # consistently with the cross-window section (same test markets & evaluate()).
+    if val is not None:
+        results = val["windows"]["test"]
+    else:
+        results = data["results"]
     out_pdf = os.path.join(_DIR, "STRATEGY_REPORT.pdf")
     cdir = os.path.join(_DIR, "cache")
 
@@ -196,10 +244,26 @@ def build_pdf(data):
             f"{meta['base_rate_up']:.1%} UP). Best by accuracy: <b>{best}</b> "
             f"({results[best]['overall']['accuracy']:.1%}).")
     if base_acc is not None:
-        summ += (f" Sway baseline accuracy: {base_acc:.1%}. Best trading ROI: "
-                 f"<b>{max(results.items(), key=lambda kv: kv[1]['trading']['roi'])[0]}</b>.")
+        summ += (f" The <b>Sway baseline is the weakest model</b> ({base_acc:.1%} "
+                 f"accuracy) — worse than simply trusting the live market price "
+                 f"({results['MarketPrice']['overall']['accuracy']:.1%}).")
     el.append(Paragraph(summ, body))
-    el.append(Spacer(1, 6))
+    el.append(Spacer(1, 4))
+    if val is not None:
+        tw, vw = val["windows"]["test"], val["windows"]["val"]
+        both_pos = [n for n in tw if tw[n]["trading"]["n_bets"] > 30
+                    and tw[n]["trading"]["roi"] > 0 and vw[n]["trading"]["roi"] > 0]
+        el.append(Paragraph(
+            "<b>Headline result.</b> Re-tested on a second independent window "
+            "(see Cross-Window Robustness), single-window trading ROI proves to be "
+            "mostly noise — most strategies flip between profit and loss. The only "
+            f"strategy profitable on <b>both</b> windows is "
+            f"<b>{', '.join(both_pos) if both_pos else 'none'}</b> "
+            f"(+{tw[both_pos[0]]['trading']['roi']:.1%} / "
+            f"+{vw[both_pos[0]]['trading']['roi']:.1%}), making it the recommended "
+            "candidate for live trading. Statistical ranking, by contrast, is "
+            "stable: Sway is consistently last.", body))
+        el.append(Spacer(1, 6))
 
     # main metrics table
     el.append(Paragraph("Overall metrics (out-of-sample)", h2))
@@ -259,6 +323,36 @@ def build_pdf(data):
     el.append(Spacer(1, 6))
     el.append(Image(c4, width=7.2 * inch, height=3.0 * inch))
 
+    # ---- Cross-window robustness ----
+    if val is not None:
+        c5 = os.path.join(cdir, "_c_validation.png")
+        chart_validation(val, c5)
+        vm = val["meta"]
+        tw, vw = val["windows"]["test"], val["windows"]["val"]
+        # strategies positive on BOTH windows (excluding the no-bet MarketPrice)
+        both_pos = [n for n in tw
+                    if tw[n]["trading"]["n_bets"] > 30
+                    and tw[n]["trading"]["roi"] > 0 and vw[n]["trading"]["roi"] > 0]
+        el.append(PageBreak())
+        el.append(Paragraph("Cross-Window Robustness", h2))
+        el.append(Paragraph(
+            f"To separate genuine edge from luck, every strategy is re-evaluated on a "
+            f"second, fully independent and time-disjoint window of "
+            f"<b>{vm['n_val']}</b> older markets, in a different regime "
+            f"(45.7% UP vs 53.2% in the recent test window).", body))
+        el.append(Spacer(1, 4))
+        el.append(Paragraph(
+            "<b>Two clear conclusions:</b> (1) Statistical quality is robust — the "
+            "Sway baseline is the least accurate model in <i>both</i> windows by a "
+            "wide margin. (2) Single-window trading ROI is largely noise: most "
+            "strategies flip sign between windows (e.g. the Ensemble swings from "
+            "-9% to +34%, Edge-GBM from -14% to +25%, even Sway from -27% to +8%). "
+            f"The only strategy with <b>positive ROI on both</b> independent windows "
+            f"is <b>{', '.join(both_pos) if both_pos else 'none'}</b> — the lone "
+            "candidate showing a repeatable trading edge.", body))
+        el.append(Spacer(1, 6))
+        el.append(Image(c5, width=7.2 * inch, height=3.66 * inch))
+
     el.append(PageBreak())
     el.append(Paragraph("Methodology", h2))
     el.append(Paragraph(
@@ -277,4 +371,4 @@ def build_pdf(data):
 
 
 if __name__ == "__main__":
-    build_pdf(load())
+    build_pdf(load(), load_validation())

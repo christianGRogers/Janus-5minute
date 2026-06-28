@@ -222,6 +222,54 @@ class LGBMRich(_RichMLBase):
 # Ensemble / blend
 # ----------------------------------------------------------------------
 
+class TimeSlotLogistic:
+    """Separate logistic regression per remaining-time slot (vs pooled LogisticMicro)."""
+    name = "Logistic-PerSlot"
+
+    def __init__(self):
+        self.models = {}
+        self.feature_names = None
+
+    def fit(self, markets):
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.linear_model import LogisticRegression
+        X, y, rem = build_training_table(markets, extract_features)
+        self.feature_names = list(X.columns)
+        Xv = X.fillna(0.0).values
+        for r in REMAINING_TIMES:
+            mask = rem == r
+            if mask.sum() < 30:
+                continue
+            mdl = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, C=1.0))
+            mdl.fit(Xv[mask], y[mask])
+            self.models[r] = mdl
+        return self
+
+    def predict(self, market, elapsed, remaining):
+        mdl = self.models.get(remaining)
+        if mdl is None:
+            return None
+        feat = extract_features(market, elapsed)
+        if feat is None:
+            return None
+        x = np.nan_to_num(np.array([[feat.get(k, 0.0) for k in self.feature_names]], dtype=float))
+        return float(np.clip(mdl.predict_proba(x)[0, 1], 0.0, 1.0))
+
+
+class CalibratedLogistic(_RichMLBase):
+    """Logistic regression with isotonic calibration."""
+    name = "Logistic-Calib"
+
+    def _make_model(self):
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.calibration import CalibratedClassifierCV
+        base = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, C=1.0))
+        return CalibratedClassifierCV(base, method="isotonic", cv=3)
+
+
 class _EdgeBase:
     """
     Predict the crowd's *error*: target = actual_bin - market_price.
