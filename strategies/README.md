@@ -11,11 +11,16 @@ markets, developed and benchmarked **against the existing Sway model**.
 | **Sway loses money badly** | −27.3% trading ROI (−$243 over 890 bets). It bets the *most* because it diverges from the crowd price most often — and it is usually wrong. |
 | **Trading ROI needs THREE windows to trust** | On 2 windows the spot-barrier models look like clear winners (+20% each). A 3rd, older window shows that edge is partly period-specific — it disappears there. |
 | **Read the underlying BTC spot** | The market resolves on whether BTC closes up/down, so the Binance spot price (which the crowd prices imperfectly) is a powerful orthogonal signal — but it must be tempered with the crowd price, not trusted outright. |
-| **Genuinely robust winners (positive on all 3 windows)** | `Combined-Logistic` **+13.5% / +22.6% / +8.1%** (regularised spot+market fusion) and `LogisticMicro` **+3.3% / +7.8% / +7.1%**. |
-| **`SpotBarrier`** | Spectacular on 2 windows (+20%/+19%) but −1.5% on oos3 — the cautionary tale. |
+| **With realistic retraining, spot+market fusion wins** | Retrained on recent data (as the live bot does), `Combined-GBM` **+13.1% / +24.1% / +22.2%** and `Combined-Logistic` **+13.5% / +25.7% / +17.2%** — robustly profitable on all three windows. |
+| **`SpotBarrier` edge is genuinely period-dependent** | Spectacular on 2 windows (+20%/+19%) but −1.5% on oos3; being training-free, that failure isn't a stale-model artifact. |
+| **Kelly-betting Sway → ruin** | Sway loses on 2 of 3 windows and is driven to ~$0 under Kelly sizing. |
 
-The headline lesson: even two out-of-sample windows can mislead on trading P&L;
-the **three-window** test is what separates a real edge from an artifact.
+Two headline lessons: (1) even two out-of-sample windows can mislead on trading
+P&L — the **three-window** test separates real edge from artifact; (2) a single
+stale model understates a strategy that is **retrained** in production, so the
+**walk-forward** test (train on each window's preceding 600 markets) is the
+realistic measure — and under it the spot+market fusion models clear all three
+windows by +13–24%.
 
 See **`STRATEGY_REPORT.pdf`** for the full comparison with charts.
 
@@ -53,7 +58,8 @@ models.py           # prediction-market strategies + the Sway baseline
 models_spot.py      # spot-driven strategies (SpotBarrier, Combined-*, etc.)
 backtest_harness.py # train all on train_set, evaluate on test_set, P&L sim
 validate.py         # cross-window robustness: evaluate on test AND val windows
-robustness3.py      # decisive 3-window test (test/val/oos3) for headline strategies
+robustness3.py      # decisive 3-window test (test/val/oos3), single stale model
+walkforward.py      # realistic per-window retraining (mirrors retrain.py)
 kelly_sim.py        # fractional-Kelly bankroll growth / ruin simulation
 make_report.py      # render STRATEGY_REPORT.pdf
 ```

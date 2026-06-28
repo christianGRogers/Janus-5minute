@@ -56,6 +56,55 @@ def load_robust3():
         return pickle.load(f)
 
 
+def load_walkforward():
+    p = os.path.join(_DIR, "cache", "walkforward.pkl")
+    if not os.path.exists(p):
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
+def chart_walkforward(wf, r3, path):
+    """Walk-forward ROI across 3 windows, plus oos3 stale-vs-fresh comparison."""
+    wn = ["test", "val", "oos3"]
+    names = sorted(wf.keys(), key=lambda n: -min(wf[n][w]["roi"] for w in wn))
+    y = np.arange(len(names))
+    h = 0.26
+    cols = {"test": "#1b9e77", "val": "#7570b3", "oos3": "#d95f02"}
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5.2),
+                                   gridspec_kw={"width_ratios": [2, 1]})
+    for i, w in enumerate(wn):
+        ax1.barh(y + (1 - i) * h, [wf[n][w]["roi"] for n in names], h,
+                 label=f"{w}", color=cols[w])
+    ax1.axvline(0, color="black", lw=0.9)
+    ax1.set_yticks(y); ax1.set_yticklabels(names, fontsize=9); ax1.invert_yaxis()
+    ax1.set_title("Walk-forward ROI (production-style retraining)")
+    ax1.set_xlabel("ROI"); ax1.legend(fontsize=8, loc="lower right")
+    for n in names:
+        allpos = all(wf[n][w]["roi"] > 0 and wf[n][w]["n_bets"] > 10 for w in wn)
+        lbl = ax1.get_yticklabels()[list(names).index(n)]
+        if allpos:
+            lbl.set_color("#2ca02c"); lbl.set_fontweight("bold")
+        if n == "Sway (baseline)":
+            lbl.set_color("#d62728")
+
+    # oos3: stale vs fresh
+    if r3 is not None:
+        common = [n for n in names if n in r3]
+        yy = np.arange(len(common))
+        stale = [r3[n]["oos3"]["roi"] for n in common]
+        fresh = [wf[n]["oos3"]["roi"] for n in common]
+        ax2.barh(yy + 0.2, stale, 0.4, label="stale global", color="#bbbbbb")
+        ax2.barh(yy - 0.2, fresh, 0.4, label="fresh retrain", color="#1f77b4")
+        ax2.axvline(0, color="black", lw=0.9)
+        ax2.set_yticks(yy); ax2.set_yticklabels(common, fontsize=8); ax2.invert_yaxis()
+        ax2.set_title("oos3: stale vs fresh training")
+        ax2.set_xlabel("ROI"); ax2.legend(fontsize=8, loc="lower right")
+    plt.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 def load_kelly():
     p = os.path.join(_DIR, "cache", "kelly.pkl")
     if not os.path.exists(p):
@@ -282,7 +331,7 @@ def chart_acc_by_slot(results, path):
 # PDF
 # ----------------------------------------------------------------------
 
-def build_pdf(data, val=None, r3=None, kelly=None):
+def build_pdf(data, val=None, r3=None, kelly=None, wf=None):
     meta = data["meta"]
     # Prefer the validation run's test window so the table covers all strategies
     # consistently with the cross-window section (same test markets & evaluate()).
@@ -359,12 +408,15 @@ def build_pdf(data, val=None, r3=None, kelly=None):
                 "analytic first-passage 'barrier' probability returns +20% on two "
                 "windows. <b>But a third, older window exposes it as partly "
                 "period-specific</b> (it goes slightly negative there) — a reminder that "
-                "even two-window results can mislead. The only strategies profitable on "
-                f"<b>all three</b> windows are: {', '.join(allpos) if allpos else 'none'}. "
-                f"Most robust: {champ_txt} — a regularised fusion of spot and "
-                "prediction-market features, and the recommended live candidate. "
-                "Throughout, the Sway baseline is the weakest model and loses money on "
-                "two of three windows.", body))
+                "even two-window results can mislead. Under that harsh stale-model test "
+                f"the only strategies profitable on <b>all three</b> windows are: "
+                f"{', '.join(allpos) if allpos else 'none'}. "
+                "<b>But the realistic picture is stronger:</b> when models are retrained "
+                "on recent data as the live bot does (see Realistic Walk-Forward), the "
+                "spot+market fusion models (Combined-GBM, Combined-Logistic) are robustly "
+                "profitable on all three windows (+13% to +24% ROI) — the recommended "
+                "live candidates. The training-free raw barrier and the Sway baseline "
+                "(broken throughout, -37% on oos3) are not.", body))
         else:
             champ = both_pos[0] if both_pos else None
             el.append(Paragraph(
@@ -520,6 +572,61 @@ def build_pdf(data, val=None, r3=None, kelly=None):
             "over-relying on any single period. The spot signal is valuable, but must be "
             "tempered with the crowd price rather than trusted outright.", body))
 
+    # ---- Realistic walk-forward (production retraining) ----
+    if wf is not None:
+        wn = ["test", "val", "oos3"]
+        wf_allpos = [n for n in wf
+                     if all(wf[n][w]["roi"] > 0 and wf[n][w]["n_bets"] > 10 for w in wn)]
+        wf_allpos.sort(key=lambda n: -min(wf[n][w]["roi"] for w in wn))
+        c8 = os.path.join(cdir, "_c_walkforward.png")
+        chart_walkforward(wf, r3, c8)
+        el.append(PageBreak())
+        el.append(Paragraph("Realistic Walk-Forward — production-style retraining", h2))
+        el.append(Paragraph(
+            "The three-window test above used a single stale model applied across very "
+            "different periods — a harsh stress test. The live bot, however, retrains on "
+            "the latest markets (retrain.py). Here each window is instead evaluated with "
+            "a model trained on the 600 markets <i>immediately preceding</i> it, which "
+            "mirrors production.", body))
+        el.append(Spacer(1, 4))
+        el.append(Paragraph(
+            "<b>This rehabilitates the spot+market models.</b> Their oos3 weakness was "
+            "largely a stale-training artifact: with fresh training, Combined-GBM goes "
+            "from -3.9% to <b>+22.2%</b> and Combined-Logistic from +8.1% to "
+            "<b>+17.2%</b> on oos3. Under realistic retraining the genuinely robust "
+            f"strategies (positive on all three windows) are: "
+            f"<b>{', '.join(wf_allpos) if wf_allpos else 'none'}</b>. The training-free "
+            "raw SpotBarrier still fails on oos3 (its edge is truly period-dependent), "
+            "and the Sway baseline stays broken regardless of retraining (-37.5% on "
+            "oos3).", body))
+        el.append(Spacer(1, 4))
+        rows = [["Strategy"] + [f"{w} ROI" for w in wn] + ["min", "all +?"]]
+        order = sorted(wf.keys(), key=lambda n: -min(wf[n][w]["roi"] for w in wn))
+        for n in order:
+            rois = [wf[n][w]["roi"] for w in wn]
+            ap = all(r > 0 for r in rois) and all(wf[n][w]["n_bets"] > 10 for w in wn)
+            rows.append([n] + [f"{r:+.1%}" for r in rois]
+                        + [f"{min(rois):+.1%}", "YES" if ap else ""])
+        twf = Table(rows, repeatRows=1, hAlign="LEFT")
+        s2 = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#34495e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ]
+        for i, n in enumerate(order, start=1):
+            rois = [wf[n][w]["roi"] for w in wn]
+            if all(r > 0 for r in rois) and all(wf[n][w]["n_bets"] > 10 for w in wn):
+                s2.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#d9f2d9")))
+                s2.append(("FONTNAME", (0, i), (-1, i), "Helvetica-Bold"))
+            if n == "Sway (baseline)":
+                s2.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#fde0dc")))
+        twf.setStyle(TableStyle(s2))
+        el.append(twf)
+        el.append(Spacer(1, 6))
+        el.append(Image(c8, width=7.2 * inch, height=3.12 * inch))
+
     # ---- Money management / bankroll ----
     if kelly is not None:
         res = kelly["results"]; p = kelly["params"]; wn = ["test", "val", "oos3"]
@@ -587,4 +694,5 @@ def build_pdf(data, val=None, r3=None, kelly=None):
 
 
 if __name__ == "__main__":
-    build_pdf(load(), load_validation(), load_robust3(), load_kelly())
+    build_pdf(load(), load_validation(), load_robust3(), load_kelly(),
+              load_walkforward())
