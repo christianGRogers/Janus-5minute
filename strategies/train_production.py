@@ -27,34 +27,42 @@ OUT = os.path.join(_DIR, "combined_model_production.pkl")
 
 
 def main():
-    # Freshest markets first (test_set ~1 day old, train_set ~3 days old)
-    markets = []
-    for name in ("test_set", "train_set"):
+    # Universal model: pool all available assets (asset-agnostic features).
+    candidates = ["test_set", "train_set", "eth_test", "eth_train",
+                  "sol_test", "sol_train"]
+    markets, used = [], []
+    for name in candidates:
         try:
             markets += attach_spot(load_dataset(name))
-        except Exception as e:
-            print(f"  skip {name}: {e}")
-    print(f"Training Combined-Logistic on {len(markets)} markets (with spot)...")
+            used.append(name)
+        except Exception:
+            pass
+    assets = sorted({m.get("asset", "btc") for m in markets})
+    print(f"Training universal Combined-GBM on {len(markets)} markets "
+          f"({'+'.join(assets)}) from {len(used)} datasets...")
 
     X, y, _ = build_training_table(markets, extract_combined_features)
     feature_names = list(X.columns)
 
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.linear_model import LogisticRegression
-    model = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, C=0.5))
+    from sklearn.ensemble import GradientBoostingClassifier
+    model = GradientBoostingClassifier(
+        n_estimators=350, max_depth=3, learning_rate=0.03, subsample=0.8,
+        random_state=42)
     model.fit(X.fillna(0.0).values, y)
 
     artifact = {
         "model": model,
         "feature_names": feature_names,
-        "strategy": "Combined-Logistic (spot + prediction-market fusion)",
+        "strategy": "Universal Combined-GBM (spot + prediction-market fusion, "
+                    "pooled across assets)",
         "metadata": {
             "trained_on_markets": len(markets),
+            "assets": assets,
             "n_features": len(feature_names),
             "training_date": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
-            "note": "Recommended robust strategy from STRATEGY_REPORT.pdf. "
-                    "Inference requires live Binance BTCUSDT 1s spot; see spot_predict.py.",
+            "note": "Recommended robust strategy from STRATEGY_REPORT.pdf. Universal "
+                    "across crypto 5-min markets. Inference fetches live Binance 1s spot "
+                    "for the asset's symbol; see spot_predict.py (pass \"asset\").",
         },
     }
     with open(OUT, "wb") as f:

@@ -113,6 +113,38 @@ def load_kelly():
         return pickle.load(f)
 
 
+def load_pooled():
+    p = os.path.join(_DIR, "cache", "pooled.pkl")
+    if not os.path.exists(p):
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
+def chart_pooled(pl, path):
+    """Pooled (universal) vs per-asset worst-case ROI for Combined-GBM & Consensus."""
+    str016 = [s for s in ["Combined-GBM", "Consensus"] if s in pl]
+    assets = list(next(iter(pl.values()))["pooled"].keys())
+    fig, axes = plt.subplots(1, len(str016), figsize=(11, 4.4), sharey=True)
+    if len(str016) == 1:
+        axes = [axes]
+    for ax, s in zip(axes, str016):
+        x = np.arange(len(assets)); w = 0.38
+        pooled = [min(pl[s]["pooled"][a]) for a in assets]
+        per = [min(pl[s]["perasset"][a]) for a in assets]
+        ax.bar(x - w/2, pooled, w, label="universal (pooled)", color="#1f77b4")
+        ax.bar(x + w/2, per, w, label="per-asset", color="#aec7e8")
+        ax.axhline(0, color="black", lw=0.8)
+        ax.set_xticks(x); ax.set_xticklabels([a.upper() for a in assets])
+        ax.set_title(s); ax.grid(alpha=0.3, axis="y")
+    axes[0].set_ylabel("worst-case ROI (min test/val)")
+    axes[-1].legend(fontsize=8)
+    fig.suptitle("One universal model (trained on BTC+ETH+SOL) vs per-asset models", y=1.02)
+    plt.tight_layout()
+    fig.savefig(path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+
+
 def load_crossasset():
     out = {}
     for asset in ("btc", "eth", "sol"):
@@ -366,7 +398,7 @@ def chart_acc_by_slot(results, path):
 # PDF
 # ----------------------------------------------------------------------
 
-def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None):
+def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None):
     meta = data["meta"]
     # Prefer the validation run's test window so the table covers all strategies
     # consistently with the cross-window section (same test markets & evaluate()).
@@ -758,6 +790,41 @@ def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None):
         el.append(Spacer(1, 6))
         el.append(Image(c9, width=7.2 * inch, height=3.27 * inch))
 
+    # ---- Universal pooled model ----
+    if pl is not None:
+        c10 = os.path.join(cdir, "_c_pooled.png")
+        chart_pooled(pl, c10)
+        el.append(PageBreak())
+        el.append(Paragraph("A Single Universal Model (pooled across assets)", h2))
+        el.append(Paragraph(
+            "Because the features are asset-agnostic (normalised bps, ratios, barrier "
+            "probability), one model can be trained on BTC+ETH+SOL pooled together "
+            "(1,800 markets) and applied to any of them. <b>This universal model matches "
+            "or beats the per-asset models</b> — more data helps. Combined-GBM (pooled) "
+            "is robustly profitable on all three assets and actually improves on BTC "
+            "(+18.3% / +16.3% vs +13.1% / +12.6% per-asset) and ETH. A single deployable "
+            "model can therefore cover every 5-minute crypto market.", body))
+        el.append(Spacer(1, 4))
+        rows = [["Strategy / asset", "universal test/val", "per-asset test/val"]]
+        for name in pl:
+            rows.append([name, "", ""])
+            for a in pl[name]["pooled"]:
+                pt, pv = pl[name]["pooled"][a]
+                at, av = pl[name]["perasset"][a]
+                rows.append([f"   {a.upper()}", f"{pt:+.1%} / {pv:+.1%}",
+                             f"{at:+.1%} / {av:+.1%}"])
+        tp = Table(rows, repeatRows=1, hAlign="LEFT")
+        tp.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#34495e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ]))
+        el.append(tp)
+        el.append(Spacer(1, 6))
+        el.append(Image(c10, width=7.2 * inch, height=3.05 * inch))
+
     el.append(PageBreak())
     el.append(Paragraph("Methodology", h2))
     el.append(Paragraph(
@@ -783,4 +850,4 @@ def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None):
 
 if __name__ == "__main__":
     build_pdf(load(), load_validation(), load_robust3(), load_kelly(),
-              load_walkforward(), load_crossasset())
+              load_walkforward(), load_crossasset(), load_pooled())

@@ -27,15 +27,16 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _DIR)
 
 from features_spot import extract_combined_features  # noqa: E402
+from spotcache import symbol_for  # noqa: E402
 
 MODEL_PATH = os.path.join(_DIR, "combined_model_production.pkl")
 BINANCE_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision"]
 
 
-def fetch_spot(market_start, elapsed):
+def fetch_spot(market_start, elapsed, symbol="BTCUSDT"):
     """Fetch Binance 1s klines for [market_start, market_start+elapsed] (no look-ahead)."""
     end = market_start + int(elapsed)
-    params = {"symbol": "BTCUSDT", "interval": "1s",
+    params = {"symbol": symbol, "interval": "1s",
               "startTime": market_start * 1000, "endTime": end * 1000}
     for host in BINANCE_HOSTS:
         try:
@@ -59,12 +60,14 @@ def main():
     prices = np.array(data["prices"], dtype=float)
     market_start = int(data["market_start"])
     elapsed = float(data["elapsed"])
+    # asset/symbol: accept "asset" (e.g. "eth") or explicit "symbol"; default BTC
+    symbol = data.get("symbol") or symbol_for(data.get("asset", "btc"))
 
     with open(MODEL_PATH, "rb") as f:
         art = pickle.load(f)
     model, feats = art["model"], art["feature_names"]
 
-    spot = fetch_spot(market_start, elapsed)
+    spot = fetch_spot(market_start, elapsed, symbol)
     market = {"times": times, "prices": prices, "sizes": np.zeros_like(prices),
               "sides": np.zeros_like(prices, dtype=np.int8),
               "market_start": market_start, "spot": spot}

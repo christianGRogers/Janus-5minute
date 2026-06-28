@@ -15,6 +15,7 @@ markets, developed and benchmarked **against the existing Sway model**.
 | **`SpotBarrier` edge is genuinely period-dependent** | Spectacular on 2 windows (+20%/+19%) but −1.5% on oos3; being training-free, that failure isn't a stale-model artifact. |
 | **Kelly-betting Sway → ruin** | Sway loses on 2 of 3 windows and is driven to ~$0 under Kelly sizing. |
 | **Generalizes across assets** | Re-run independently on BTC, ETH, SOL: Consensus & Combined-GBM profitable on all three; Sway loses on all three (−27% / −4% / −34%). |
+| **One universal model works** | A single Combined-GBM trained on BTC+ETH+SOL pooled matches/beats per-asset models (BTC +18.3%/+16.3%) — one deployable model for all crypto 5-min markets. |
 
 Two headline lessons: (1) even two out-of-sample windows can mislead on trading
 P&L — the **three-window** test separates real edge from artifact; (2) a single
@@ -90,15 +91,18 @@ train-on-past / predict-future evaluation with no look-ahead.
 The recommended robust model is shipped as a self-contained predictor:
 
 ```
-train_production.py            # trains Combined-Logistic on freshest markets
-combined_model_production.pkl  # the saved artifact (82 features)
-spot_predict.py                # drop-in alternative to sway_predict.py
+pooled.py                      # universal vs per-asset model comparison
+train_production.py            # trains the universal Combined-GBM on all assets
+combined_model_production.pkl  # the saved universal artifact (82 features)
+spot_predict.py                # drop-in, asset-aware alternative to sway_predict.py
 ```
 
 `spot_predict.py` uses the **same stdin/stdout JSON contract as
-`sway_predict.py`** but additionally fetches live Binance BTCUSDT 1s spot for the
-window (the signal that makes the model robust). To adopt it, the Go bot would
-call `spot_predict.py` instead of `sway_predict.py`. Retrain periodically with
+`sway_predict.py`**, plus an optional `"asset"` field (e.g. `"eth"`), and fetches
+the right Binance 1s spot symbol for the window (the signal that makes the model
+robust). The shipped model is the **universal Combined-GBM** trained on
+BTC+ETH+SOL, so one model serves every market. To adopt it, the Go bot calls
+`spot_predict.py` instead of `sway_predict.py`. Retrain with
 `train_production.py` (mirrors the existing `retrain.py` cadence).
 
 ## Strategies
