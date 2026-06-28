@@ -22,6 +22,10 @@ from models import (
     EdgeGBM, EdgeRidge, CalibratedXGB, TimeSlotLogistic, CalibratedLogistic,
     BlendStrategy,
 )
+from models_spot import (
+    attach_spot, SpotBarrier, SpotLogistic, SpotGBM,
+    CombinedLogistic, CombinedGBM,
+)
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -32,6 +36,9 @@ def build_strategies(train):
         LogisticMicro(), TimeSlotLogistic(), CalibratedLogistic(),
         GBMRich(), RandomForestRich(), XGBRich(), LGBMRich(),
         EdgeGBM(), EdgeRidge(), CalibratedXGB(),
+        # spot-driven (use the underlying BTC price)
+        SpotBarrier(), SpotLogistic(), SpotGBM(),
+        CombinedLogistic(), CombinedGBM(),
     ]
     fitted = []
     for s in strategies:
@@ -41,19 +48,19 @@ def build_strategies(train):
         print(f"{time.time()-t0:.1f}s")
         fitted.append(s)
     blend = BlendStrategy(
-        members=[LogisticMicro().fit(train), EdgeGBM().fit(train),
-                 CalibratedXGB().fit(train), MarketPriceStrategy()],
-        weights=[1.3, 1.0, 1.0, 1.0], shrink=0.10, name="Ensemble")
+        members=[SpotBarrier().fit(train), CombinedGBM().fit(train),
+                 LogisticMicro().fit(train)],
+        weights=[1.5, 1.2, 0.8], shrink=0.0, name="Ensemble-Spot")
     fitted.append(blend)
     return fitted
 
 
 def main():
     print("Loading datasets...")
-    train = load_dataset("train_set")
-    test = load_dataset("test_set")
-    val = load_dataset("val_set")
-    print(f"  train={len(train)} test={len(test)} val={len(val)}")
+    train = attach_spot(load_dataset("train_set"))
+    test = attach_spot(load_dataset("test_set"))
+    val = attach_spot(load_dataset("val_set"))
+    print(f"  train={len(train)} test={len(test)} val={len(val)} (with spot)")
     print(f"  test UP={np.mean([m['actual_bin'] for m in test]):.1%}  "
           f"val UP={np.mean([m['actual_bin'] for m in val]):.1%}")
 

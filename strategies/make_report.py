@@ -26,6 +26,14 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 REMAINING_TIMES = [60, 30, 20, 15, 10]
 BASELINE = "Sway (baseline)"
 
+# Curated subset for line charts (keeping all 19 in tables / bar charts).
+FEATURED = ["Sway (baseline)", "MarketPrice", "LogisticMicro",
+            "Combined-GBM", "SpotBarrier", "Ensemble-Spot"]
+
+
+def _featured(results):
+    return [n for n in FEATURED if n in results]
+
 
 def load():
     with open(os.path.join(_DIR, "cache", "results.pkl"), "rb") as f:
@@ -54,7 +62,7 @@ def chart_accuracy_brier(results, meta, path):
     briers = [briers[i] for i in order]
     colors_b = ["#d62728" if n == BASELINE else "#1f77b4" for n in names]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 6.8))
     ax1.barh(names, accs, color=colors_b)
     ax1.axvline(meta["base_rate_up"] if meta["base_rate_up"] > 0.5 else 1 - meta["base_rate_up"],
                 color="gray", ls="--", lw=1, label="majority-class")
@@ -79,8 +87,8 @@ def chart_pnl(results, path):
     names = list(results.keys())
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5))
 
-    # equity curves
-    for n in names:
+    # equity curves (curated subset for readability)
+    for n in _featured(results):
         eq = results[n]["trading"]["equity_curve"]
         if eq:
             ax1.plot(eq, label=f"{n} (${eq[-1]:+.0f})",
@@ -114,7 +122,7 @@ def chart_margin_sweep(results, path):
     fig, ax = plt.subplots(figsize=(11, 4.6))
     # only plot strategies with meaningful bet counts
     plotted = 0
-    for n in results:
+    for n in _featured(results):
         ms = results[n].get("margin_sweep")
         if not ms:
             continue
@@ -145,7 +153,7 @@ def chart_validation(val, path):
     y = np.arange(len(names))
     h = 0.4
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5.6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 7.5))
 
     ta = [tw[n]["overall"]["accuracy"] for n in names]
     va = [vw[n]["overall"]["accuracy"] for n in names]
@@ -174,7 +182,7 @@ def chart_validation(val, path):
 
 def chart_acc_by_slot(results, path):
     fig, ax = plt.subplots(figsize=(11, 5))
-    for n in results:
+    for n in _featured(results):
         ys = []
         for r in REMAINING_TIMES:
             s = results[n]["slots"].get(r)
@@ -253,16 +261,21 @@ def build_pdf(data, val=None):
         tw, vw = val["windows"]["test"], val["windows"]["val"]
         both_pos = [n for n in tw if tw[n]["trading"]["n_bets"] > 30
                     and tw[n]["trading"]["roi"] > 0 and vw[n]["trading"]["roi"] > 0]
+        # rank robust winners by worst-case (min) ROI across the two windows
+        both_pos.sort(key=lambda n: -min(tw[n]["trading"]["roi"], vw[n]["trading"]["roi"]))
+        champ = both_pos[0] if both_pos else None
+        champ_txt = (f"<b>{champ}</b> (+{tw[champ]['trading']['roi']:.1%} test / "
+                     f"+{vw[champ]['trading']['roi']:.1%} val)") if champ else "none"
         el.append(Paragraph(
-            "<b>Headline result.</b> Re-tested on a second independent window "
-            "(see Cross-Window Robustness), single-window trading ROI proves to be "
-            "mostly noise — most strategies flip between profit and loss. The only "
-            f"strategy profitable on <b>both</b> windows is "
-            f"<b>{', '.join(both_pos) if both_pos else 'none'}</b> "
-            f"(+{tw[both_pos[0]]['trading']['roi']:.1%} / "
-            f"+{vw[both_pos[0]]['trading']['roi']:.1%}), making it the recommended "
-            "candidate for live trading. Statistical ranking, by contrast, is "
-            "stable: Sway is consistently last.", body))
+            "<b>Headline result.</b> The biggest edge comes from a signal the "
+            "prediction-market models never use: the <b>underlying BTC spot price</b> "
+            "(Binance 1s data). A purely analytic first-passage 'barrier' probability "
+            "computed from the live spot lead and realised volatility is the strongest "
+            "trader. Crucially, it is re-tested on a second independent window — where "
+            "most strategies' trading ROI flips sign (noise). The strategies "
+            f"profitable on <b>both</b> windows are: {', '.join(both_pos) if both_pos else 'none'}. "
+            f"Most robust (best worst-case ROI): {champ_txt}. Statistical accuracy "
+            "ranking is stable throughout: the Sway baseline is consistently last.", body))
         el.append(Spacer(1, 6))
 
     # main metrics table
@@ -307,9 +320,9 @@ def build_pdf(data, val=None):
 
     el.append(PageBreak())
     el.append(Paragraph("Accuracy &amp; Calibration", h2))
-    el.append(Image(c1, width=7.2 * inch, height=3.27 * inch))
+    el.append(Image(c1, width=6.6 * inch, height=4.08 * inch))
     el.append(Spacer(1, 6))
-    el.append(Image(c3, width=7.2 * inch, height=3.27 * inch))
+    el.append(Image(c3, width=7.0 * inch, height=3.18 * inch))
 
     el.append(PageBreak())
     el.append(Paragraph("Trading Performance", h2))
@@ -333,6 +346,7 @@ def build_pdf(data, val=None):
         both_pos = [n for n in tw
                     if tw[n]["trading"]["n_bets"] > 30
                     and tw[n]["trading"]["roi"] > 0 and vw[n]["trading"]["roi"] > 0]
+        both_pos.sort(key=lambda n: -min(tw[n]["trading"]["roi"], vw[n]["trading"]["roi"]))
         el.append(PageBreak())
         el.append(Paragraph("Cross-Window Robustness", h2))
         el.append(Paragraph(
@@ -345,13 +359,14 @@ def build_pdf(data, val=None):
             "<b>Two clear conclusions:</b> (1) Statistical quality is robust — the "
             "Sway baseline is the least accurate model in <i>both</i> windows by a "
             "wide margin. (2) Single-window trading ROI is largely noise: most "
-            "strategies flip sign between windows (e.g. the Ensemble swings from "
-            "-9% to +34%, Edge-GBM from -14% to +25%, even Sway from -27% to +8%). "
-            f"The only strategy with <b>positive ROI on both</b> independent windows "
-            f"is <b>{', '.join(both_pos) if both_pos else 'none'}</b> — the lone "
-            "candidate showing a repeatable trading edge.", body))
+            "prediction-market-only strategies flip sign between windows (e.g. "
+            "Edge-GBM from -14% to +25%). (3) The spot-driven strategies are "
+            "different: they are profitable in <i>both</i> windows. Strategies with "
+            f"<b>positive ROI on both</b> windows (ranked by worst-case ROI): "
+            f"<b>{', '.join(both_pos) if both_pos else 'none'}</b>. The analytic "
+            "SpotBarrier model leads — a repeatable, sizeable trading edge.", body))
         el.append(Spacer(1, 6))
-        el.append(Image(c5, width=7.2 * inch, height=3.66 * inch))
+        el.append(Image(c5, width=6.7 * inch, height=4.57 * inch))
 
     el.append(PageBreak())
     el.append(Paragraph("Methodology", h2))
@@ -360,10 +375,16 @@ def build_pdf(data, val=None):
         "(no look-ahead). Predictions are made at 60, 30, 20, 15 and 10 seconds "
         "remaining. The Sway baseline is a faithful reproduction of the repo's "
         "per-slot GradientBoosting model on the 29 channel-sway features. "
-        "Candidate models add the absolute price level, VWAP, multi-horizon "
-        "momentum/volatility and order-flow imbalance features. Metrics: "
-        "directional accuracy, Brier score and log-loss (probability quality), "
-        "plus a fee-aware Polymarket P&amp;L simulation.", body))
+        "Prediction-market candidates add the absolute price level, VWAP, "
+        "multi-horizon momentum/volatility and order-flow imbalance. "
+        "<b>Spot-driven candidates</b> additionally read the underlying BTC price "
+        "(Binance 1s klines): the SpotBarrier model computes an analytic "
+        "first-passage probability P(close &gt; open) = &#934;(lead / "
+        "(&#963;&#8730;t_remaining)) from the live spot lead and realised "
+        "volatility; the Combined models feed spot + market features into a "
+        "classifier. Metrics: directional accuracy, Brier score and log-loss "
+        "(probability quality), plus a fee-aware Polymarket P&amp;L simulation that "
+        "only bets on positive-EV divergences from the crowd price.", body))
 
     doc.build(el)
     print(f"Wrote {out_pdf}")
