@@ -888,6 +888,39 @@ def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None, im
         el.append(Spacer(1, 6))
         el.append(Image(cimp, width=6.8 * inch, height=3.54 * inch))
 
+    # ---- Ablations / what didn't help (honest negative results) ----
+    el.append(PageBreak())
+    el.append(Paragraph("Ablations &amp; What Didn't Help", h2))
+    el.append(Paragraph(
+        "Many ideas were tested and rejected because they did not improve "
+        "out-of-period (worst-case across windows) robustness. Recording them so "
+        "the dead ends aren't repeated. The recurring lesson: the regularised "
+        "spot+market fusion on the full feature set sits at a sweet spot — both "
+        "<i>over-elaboration</i> and <i>over-pruning</i> reduce robustness.", body))
+    el.append(Spacer(1, 4))
+    abl = [
+        ["Idea tried", "Result", "Verdict"],
+        ["Calibrated XGB / per-slot / ToD features", "boost one window, hurt others", "rejected"],
+        ["Edge / residual models (predict crowd error)", "high variance, sign-flips", "rejected"],
+        ["Drift term on the barrier", "+val, -worst-case", "rejected"],
+        ["Ensembles / blends of the winners", "dilute bet selection, lower min", "rejected"],
+        ["BTC as cross-asset signal for ETH/SOL", "redundant with alt's own spot", "rejected"],
+        ["Minimal model (top ~9 features only)", "collapses on oos3 (-7%)", "rejected"],
+        ["Raw analytic SpotBarrier alone", "great on 2 windows, fails oos3", "use tempered/fused"],
+        ["Combined-GBM/Logistic (full features)", "robust on all windows & assets", "ADOPTED"],
+    ]
+    ta = Table(abl, repeatRows=1, hAlign="LEFT", colWidths=[2.9*inch, 2.6*inch, 1.4*inch])
+    sa = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#34495e")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+    ]
+    sa.append(("BACKGROUND", (0, len(abl)-1), (-1, len(abl)-1), colors.HexColor("#d9f2d9")))
+    sa.append(("FONTNAME", (0, len(abl)-1), (-1, len(abl)-1), "Helvetica-Bold"))
+    ta.setStyle(TableStyle(sa))
+    el.append(ta)
+
     el.append(PageBreak())
     el.append(Paragraph("Methodology", h2))
     el.append(Paragraph(
