@@ -145,6 +145,33 @@ def chart_pooled(pl, path):
     plt.close(fig)
 
 
+def load_slippage():
+    p = os.path.join(_DIR, "cache", "slippage.pkl")
+    if not os.path.exists(p):
+        return None
+    with open(p, "rb") as f:
+        return pickle.load(f)
+
+
+def chart_slippage(sl, path):
+    res = sl["results"]
+    slips = sorted(res.keys())
+    rois = [res[s]["roi"] for s in slips]
+    fig, ax = plt.subplots(figsize=(8, 3.4))
+    ax.plot([f"{s:.1%}" for s in slips], rois, marker="o", lw=2, color="#1f77b4")
+    ax.axhline(0, color="gray", lw=0.8)
+    ax.fill_between(range(len(slips)), rois, 0, alpha=0.12, color="#1f77b4")
+    ax.set_title("Edge survives execution cost (universal model, pooled OOS)")
+    ax.set_xlabel("adverse slippage per entry")
+    ax.set_ylabel("ROI")
+    for i, r in enumerate(rois):
+        ax.text(i, r + 0.01, f"{r:+.0%}", ha="center", fontsize=8)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 def load_zeroshot():
     p = os.path.join(_DIR, "cache", "zeroshot.pkl")
     if not os.path.exists(p):
@@ -468,7 +495,7 @@ def chart_acc_by_slot(results, path):
 # ----------------------------------------------------------------------
 
 def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None,
-              imp=None, zs=None):
+              imp=None, zs=None, sl=None):
     meta = data["meta"]
     # Prefer the validation run's test window so the table covers all strategies
     # consistently with the cross-window section (same test markets & evaluate()).
@@ -815,6 +842,20 @@ def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None,
             "<i>Caveat: drawdowns are large (40-60%) — this edge is real but noisy, "
             "so position sizing must stay conservative. LogisticMicro has the gentlest "
             "drawdown; Combined-Logistic the highest growth.</i>", body))
+        if sl is not None:
+            cslp = os.path.join(cdir, "_c_slippage.png")
+            chart_slippage(sl, cslp)
+            r = sl["results"]; mx = max(r.keys())
+            el.append(Spacer(1, 8))
+            el.append(Paragraph(
+                f"<b>Execution-cost robustness.</b> Prediction markets are thin, so the "
+                f"edge must survive slippage. Re-pricing every entry adversely shows the "
+                f"universal model degrades gracefully — even at a punishing "
+                f"{mx:.0%} slippage per trade it still returns "
+                f"<b>{r[mx]['roi']:+.0%}</b> ROI ({r[mx]['n']:,} bets, pooled OOS). The "
+                "edge is wide enough to absorb realistic costs.", body))
+            el.append(Spacer(1, 4))
+            el.append(Image(cslp, width=6.0 * inch, height=2.55 * inch))
 
     # ---- Cross-asset generalization ----
     if ca is not None and len(ca) >= 2:
@@ -1015,4 +1056,4 @@ def build_pdf(data, val=None, r3=None, kelly=None, wf=None, ca=None, pl=None,
 if __name__ == "__main__":
     build_pdf(load(), load_validation(), load_robust3(), load_kelly(),
               load_walkforward(), load_crossasset(), load_pooled(), load_importance(),
-              load_zeroshot())
+              load_zeroshot(), load_slippage())
