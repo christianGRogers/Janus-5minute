@@ -234,6 +234,38 @@ class MarketTemperedBarrier:
                              0.0, 1.0))
 
 
+class ConsensusStrategy:
+    """
+    Only bet when two orthogonal signals agree on direction vs the crowd price:
+    a trained fusion model (Combined-GBM) and the independent analytic SpotBarrier.
+    When they disagree, return the market price (=> no positive-EV divergence =>
+    no bet). Higher precision by demanding consensus.
+    """
+    name = "Consensus"
+
+    def __init__(self):
+        self.fusion = CombinedGBM()
+        self.barrier = SpotBarrier()
+
+    def fit(self, markets):
+        self.fusion.fit(markets)
+        self.barrier.fit(markets)
+        return self
+
+    def predict(self, market, elapsed, remaining):
+        from features import extract_features
+        qc = self.fusion.predict(market, elapsed, remaining)
+        qb = self.barrier.predict(market, elapsed, remaining)
+        mf = extract_features(market, elapsed)
+        if qc is None or qb is None or mf is None:
+            return None
+        p = float(np.clip(mf["last_price"], 0.01, 0.99))
+        # both must point the same way relative to the crowd price
+        if (qc - p) * (qb - p) > 0:
+            return qc
+        return p   # disagreement -> sit out
+
+
 class SpotEdgeGBM:
     """
     Predict the crowd's error (actual - market_price) from spot + market features.

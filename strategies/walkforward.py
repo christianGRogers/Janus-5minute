@@ -26,6 +26,7 @@ from backtest_harness import evaluate
 from models import MarketPriceStrategy, SwayBaseline, LogisticMicro
 from models_spot import (
     attach_spot, SpotBarrier, MarketTemperedBarrier, CombinedLogistic, CombinedGBM,
+    ConsensusStrategy,
 )
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,7 +35,7 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 def make_strategies():
     return [SwayBaseline(), MarketPriceStrategy(), LogisticMicro(),
             SpotBarrier(), MarketTemperedBarrier(w=0.5),
-            CombinedLogistic(), CombinedGBM()]
+            CombinedLogistic(), CombinedGBM(), ConsensusStrategy()]
 
 
 def main():
