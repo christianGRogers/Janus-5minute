@@ -84,6 +84,7 @@ type SwayStrategy struct {
 	pythonBin       string
 	modelScriptPath string
 	retrainScript   string
+	asset           string // asset prefix sent to the predictor (e.g. "btc")
 
 	// Loss-triggered retrain (mirrors late_entry.go pattern).
 	lossScriptPath string
@@ -104,22 +105,49 @@ type SwayStrategy struct {
 //
 // Environment variables:
 //
-//	SWAY_PYTHON_BIN   – python executable (default: python3)
-//	SWAY_SCRIPT_PATH  – path to sway_predict.py (default: sway_model/sway_predict.py)
+//	SWAY_PYTHON_BIN     – python executable (default: python3)
+//	SWAY_USE_LEGACY     – "1"/"true" to fall back to the original sway model
+//	                      (sway_model/sway_predict.py + retrain.py). By default
+//	                      the live strategy uses the spot+market fusion model
+//	                      (strategies/spot_predict.py + retrain_combined.py).
+//	SWAY_SCRIPT_PATH    – override predictor path (wins over SWAY_USE_LEGACY)
+//	SWAY_RETRAIN_SCRIPT – override retrain script path
+//	SWAY_ASSET          – asset prefix for the predictor, e.g. "btc" (default: btc)
 func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 	pythonBin := os.Getenv("SWAY_PYTHON_BIN")
 	if pythonBin == "" {
 		pythonBin = "python3"
 	}
 
+	// The spot+market fusion model (the strategy-research winner) is the live
+	// default. Set SWAY_USE_LEGACY=1 to fall back to the original sway model.
+	// Explicit SWAY_SCRIPT_PATH/SWAY_RETRAIN_SCRIPT overrides still win.
+	useLegacy := os.Getenv("SWAY_USE_LEGACY") == "1" ||
+		strings.EqualFold(os.Getenv("SWAY_USE_LEGACY"), "true")
+
+	defaultScript := "strategies/spot_predict.py"
+	defaultRetrain := "strategies/retrain_combined.py"
+	if useLegacy {
+		defaultScript = "sway_model/sway_predict.py"
+		defaultRetrain = "sway_model/retrain.py"
+		log.Printf("[Sway] SWAY_USE_LEGACY enabled — using legacy sway model")
+	} else {
+		log.Printf("[Sway] Using spot+market fusion model (Combined-GBM)")
+	}
+
 	scriptPath := os.Getenv("SWAY_SCRIPT_PATH")
 	if scriptPath == "" {
-		scriptPath = "sway_model/sway_predict.py"
+		scriptPath = defaultScript
 	}
 
 	retrainScript := os.Getenv("SWAY_RETRAIN_SCRIPT")
 	if retrainScript == "" {
-		retrainScript = "sway_model/retrain.py"
+		retrainScript = defaultRetrain
+	}
+
+	asset := os.Getenv("SWAY_ASSET")
+	if asset == "" {
+		asset = "btc"
 	}
 
 	lossScriptPath := os.Getenv("LOSS_SCRIPT_PATH")
@@ -150,6 +178,7 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		pythonBin:          pythonBin,
 		modelScriptPath:    scriptPath,
 		retrainScript:      retrainScript,
+		asset:              asset,
 		lossScriptPath:     lossScriptPath,
 		proxyAddress:       proxyAddress,
 		lastLossCount:      -1,
@@ -456,6 +485,7 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		"market_start": float64(marketStart),
 		"elapsed":      elapsed,
 		"remaining":    remaining,
+		"asset":        ss.asset, // ignored by sway_predict.py; used by spot_predict.py
 	}
 	inputJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -674,7 +704,7 @@ func (ss *SwayStrategy) triggerRetrain() {
 			}
 		}()
 
-		log.Printf("[Sway] Retrain started (latest 600 markets → sway_model_live.pkl)")
+		log.Printf("[Sway] Retrain started (latest markets via %s)", ss.retrainScript)
 		cmd := exec.Command(ss.pythonBin, ss.retrainScript)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

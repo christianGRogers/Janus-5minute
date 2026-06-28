@@ -128,8 +128,6 @@ go run ./cmd/bot
 - Backtests typically 10-30% more conservative than unrealistic simulations
 - Configurable per `config.PaperTradingRealistic`
 
-See [PAPER_TRADING_REALISM.md](./PAPER_TRADING_REALISM.md) for detailed documentation on realism features.
-
 ## Adding Strategies
 
 Create a new file in `pkg/strategies/`:
@@ -160,60 +158,21 @@ func (s *YourStrategy) Run() {
 
 ## Performance Analysis & Visualization
 
-The bot includes a comprehensive Python-based visualization tool that generates detailed performance analytics from trading logs.
-
-### Available Charts
-
-#### 📈 Profit Timeline
-Cumulative profit over time with trade markers showing wins (green) and losses (red)
-
-![Profit Timeline](./charts/01_profit_timeline.png)
-
-#### 🎯 Win Rate Analysis
-Win/loss distribution, cumulative win rate, and trading frequency breakdown
-
-![Win Rate Analysis](./charts/02_win_rate_analysis.png)
-
-#### 💰 Price Analysis
-Entry/exit price distributions for UP and DOWN positions with statistical overlays
-
-![Price Analysis](./charts/03_price_analysis.png)
-
-#### 💸 Fee Analysis
-Fee patterns by trade type and cumulative fee impact on profitability
-
-![Fee Analysis](./charts/04_fee_analysis.png)
-
-#### 📊 Account Balance
-Account balance progression starting from $10,000 with drawdown analysis
-
-![Account Balance](./charts/05_account_balance.png)
-
-#### 📋 Summary Statistics
-Key metrics: total trades, win rate, ROI, hours traded, fees, and P&L breakdown
-
-![Summary Statistics](./charts/06_summary_stats.png)
-
-### Quick Start
-
-Generate visualization charts from trading logs:
+`tools/visualize_performance.py` generates performance analytics (profit
+timeline, win-rate, price/fee analysis, account balance and summary stats) from
+trading logs, writing the charts to an output directory.
 
 ```bash
 python tools/visualize_performance.py logs/markets/YOUR_LOG/market_performance.csv --output charts
 ```
 
-For detailed setup and usage:
-- **Quick Start**: See [`tools/VISUALIZATION_QUICKSTART.md`](./tools/VISUALIZATION_QUICKSTART.md)
-- **Full Guide**: See [`tools/README.md`](./tools/README.md)
-- **Quick Reference**: See [`tools/QUICK_REFERENCE.py`](./tools/QUICK_REFERENCE.py)
+Requires Python 3.8+ with matplotlib, seaborn, pandas and numpy.
 
-### Requirements
+## Strategy Research
 
-Python 3.8+ with dependencies specified in `tools/requirements-analysis.txt`:
-- matplotlib ≥ 3.6 (charting)
-- seaborn ≥ 0.12 (statistical visualization)
-- pandas ≥ 1.5 (data manipulation)
-- numpy < 2.0 (numerical computing)
+See [`strategies/`](./strategies/README.md) for an out-of-sample study of
+prediction strategies for these 5-minute markets, benchmarked against the sway
+model (`STRATEGY_REPORT.pdf`).
 
 ## Next Steps
 

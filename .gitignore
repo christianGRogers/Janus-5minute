@@ -4,3 +4,7 @@
 !.env.example
 *.exe
 getpasphrase.py
+
+# Python build artifacts
+__pycache__/
+*.pyc
