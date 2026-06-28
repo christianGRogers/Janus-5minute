@@ -18,7 +18,7 @@ from backtest_harness import evaluate
 from models import MarketPriceStrategy, SwayBaseline, LogisticMicro, EdgeGBM
 from models_spot import (
     attach_spot, SpotBarrier, SpotBarrierLate, SpotBarrierDrift,
-    CombinedLogistic, CombinedGBM,
+    MarketTemperedBarrier, CombinedLogistic, CombinedGBM,
 )
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +37,7 @@ def main():
     strategies = [
         SwayBaseline(), MarketPriceStrategy(), LogisticMicro(), EdgeGBM(),
         SpotBarrier(), SpotBarrierLate(max_remaining=20), SpotBarrierDrift(),
-        CombinedLogistic(), CombinedGBM(),
+        MarketTemperedBarrier(w=0.5), CombinedLogistic(), CombinedGBM(),
     ]
     for s in strategies:
         s.fit(train)

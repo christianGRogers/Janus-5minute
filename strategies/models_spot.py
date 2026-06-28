@@ -209,6 +209,31 @@ class CombinedGBM(_SpotMLBase):
             random_state=42)
 
 
+class MarketTemperedBarrier:
+    """
+    SpotBarrier blended toward the crowd price. The pure barrier diverges from the
+    market too aggressively and that divergence is what fails out-of-period; mixing
+    in the crowd price tempers it. P(UP) = (1-w)*market_price + w*barrier_prob.
+    `w` is set a priori (not tuned on the test windows).
+    """
+    def __init__(self, w=0.5):
+        self.w = w
+        self.name = f"TemperedBarrier(w={w})"
+
+    def fit(self, markets):
+        return self
+
+    def predict(self, market, elapsed, remaining):
+        from features import extract_features
+        bf = extract_spot_features(market, elapsed)
+        mf = extract_features(market, elapsed)
+        if bf is None or mf is None:
+            return None
+        price = mf["last_price"]
+        return float(np.clip((1 - self.w) * price + self.w * bf["spot_barrier_prob"],
+                             0.0, 1.0))
+
+
 class SpotEdgeGBM:
     """
     Predict the crowd's error (actual - market_price) from spot + market features.
