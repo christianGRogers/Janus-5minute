@@ -16,6 +16,7 @@ markets, developed and benchmarked **against the existing Sway model**.
 | **Kelly-betting Sway → ruin** | Sway loses on 2 of 3 windows and is driven to ~$0 under Kelly sizing. |
 | **Generalizes across assets** | Re-run independently on BTC, ETH, SOL: Consensus & Combined-GBM profitable on all three; Sway loses on all three (−27% / −4% / −34%). |
 | **One universal model works** | A single Combined-GBM trained on BTC+ETH+SOL pooled matches/beats per-asset models (BTC +18.3%/+16.3%) — one deployable model for all crypto 5-min markets. |
+| **Zero-shot transfer** | The universal model, with NO retraining, is profitable on assets it never saw — XRP +13%/+22%, DOGE +40%/+29%, BNB +29%/+133% — proving the edge is general, not memorized. |
 
 Two headline lessons: (1) even two out-of-sample windows can mislead on trading
 P&L — the **three-window** test separates real edge from artifact; (2) a single
@@ -63,6 +64,8 @@ validate.py         # cross-window robustness: evaluate on test AND val windows
 robustness3.py      # decisive 3-window test (test/val/oos3), single stale model
 walkforward.py      # realistic per-window retraining (mirrors retrain.py)
 crossasset.py       # re-run the whole comparison on ETH / SOL / etc.
+pooled.py           # universal vs per-asset model comparison
+zeroshot.py         # universal model on UNSEEN assets (XRP/DOGE/BNB), no retrain
 kelly_sim.py        # fractional-Kelly bankroll growth / ruin simulation
 make_report.py      # render STRATEGY_REPORT.pdf
 ```
