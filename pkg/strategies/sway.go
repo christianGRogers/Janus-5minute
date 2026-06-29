@@ -203,7 +203,18 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 
 func (ss *SwayStrategy) Name() string { return "Sway" }
 
-func (ss *SwayStrategy) SetDashboard(d *analytics.Dashboard) { ss.dashboard = d }
+func (ss *SwayStrategy) SetDashboard(d *analytics.Dashboard) {
+	ss.dashboard = d
+	if d != nil {
+		// Show the active model immediately (before the first prediction fills
+		// in the full identity), so the dashboard never sits on "(loading...)".
+		name := "combined"
+		if strings.Contains(ss.modelScriptPath, "sway_predict") {
+			name = "sway"
+		}
+		d.SetModelInfo(&analytics.ModelInfo{Name: name})
+	}
+}
 
 // EvaluateV2 is called every 5 seconds by main.go.
 func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *TradeSignal {
@@ -513,6 +524,10 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		SwayMagnitude float64            `json:"sway_magnitude"`
 		ShortLongDiv  float64            `json:"short_long_div"`
 		TimeRemaining int                `json:"time_remaining"`
+		// Combined (spot+market) model signals
+		SpotLeadBps     float64 `json:"spot_lead_bps"`
+		SpotBarrierProb float64 `json:"spot_barrier_prob"`
+		MarketPrice     float64 `json:"market_price"`
 		// Model identity fields populated by sway_predict.py
 		ModelVersion      string  `json:"model_version"`
 		ModelAccuracy     float64 `json:"model_accuracy"`
@@ -590,6 +605,9 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 			SwayAgreement:   result.SwayAgreement,
 			SwayMagnitude:   result.SwayMagnitude,
 			ShortLongDiv:    result.ShortLongDiv,
+			SpotLeadBps:     result.SpotLeadBps,
+			SpotBarrierProb: result.SpotBarrierProb,
+			MarketPrice:     result.MarketPrice,
 		})
 	}
 }

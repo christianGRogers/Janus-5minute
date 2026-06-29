@@ -100,8 +100,8 @@ def main():
         "spot_barrier_prob": round(f.get("spot_barrier_prob", 0.5), 4),
         "market_price": round(f.get("last_price", 0.5), 4),
         "model_strategy": art.get("strategy", ""),
-        # model-identity fields (consumed by the Go bot's logging)
-        "model_version": "combined-" + str(meta.get("assets", "")),
+        # model-identity fields (consumed by the Go bot's dashboard/logging)
+        "model_version": "combined",
         "model_markets": int(meta.get("trained_on_markets", 0)),
         "model_training_date": str(meta.get("training_date", "")),
     }, sys.stdout)
