@@ -22,9 +22,14 @@ type SwayModelState struct {
 	SwayAgreement float64
 	SwayMagnitude float64
 	ShortLongDiv  float64
+
+	// Combined (spot+market) model signals — populated when SwayValues is empty
+	SpotLeadBps     float64
+	SpotBarrierProb float64
+	MarketPrice     float64
 }
 
-// ModelInfo holds the currently loaded sway model's identity and live session stats.
+// ModelInfo holds the currently loaded model's identity and live session stats.
 type ModelInfo struct {
 	Name      string  // "live", "4", "v4", etc.
 	Accuracy  float64 // stored holdout overall accuracy (0 if unavailable)
@@ -238,7 +243,7 @@ func (d *Dashboard) SetModelInfo(info *ModelInfo) {
 }
 
 // SetRetraining marks whether the model is currently being retrained.
-// While true, the SWAY MODEL section shows a retraining banner.
+// While true, the MODEL section shows a retraining banner.
 func (d *Dashboard) SetRetraining(v bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -324,8 +329,8 @@ func (d *Dashboard) Render() {
 		fmt.Printf("\n🔄 LAST TRADE: None\n")
 	}
 
-	// ============ SWAY MODEL SECTION ============
-	fmt.Printf("\n🧠 SWAY MODEL:\n")
+	// ============ MODEL SECTION ============
+	fmt.Printf("\n🧠 MODEL:\n")
 
 	// Model identity + session stats row
 	if d.modelInfo != nil {
@@ -361,7 +366,7 @@ func (d *Dashboard) Render() {
 
 	// Retraining banner — shown above prediction data when active
 	if d.retraining {
-		fmt.Printf("   ⏳ RETRAINING ON LATEST 600 MARKETS — new BUY orders paused\n")
+		fmt.Printf("   ⏳ RETRAINING ON LATEST MARKETS — new BUY orders paused\n")
 	}
 
 	if d.swayState != nil && d.swayState.FeaturesOK {
@@ -383,18 +388,25 @@ func (d *Dashboard) Render() {
 		fmt.Printf("   Prediction: %-4s  Raw: %.4f  Conf: %.1f%%  [%s]\n",
 			s.Outcome, s.RawPrediction, s.Confidence*100, bar)
 		fmt.Printf("   Predicted at %ds remaining  (%.0fs ago)\n", s.RemainingAtPred, age)
-		fmt.Printf("   Sway signals (last value per window):\n")
-		for _, w := range []int{10, 15, 20, 30, 60} {
-			v := s.SwayValues[w]
-			dir := "+"
-			if v < 0 {
-				dir = ""
+		if len(s.SwayValues) > 0 {
+			// Legacy sway model: per-window directional momentum.
+			fmt.Printf("   Sway signals (last value per window):\n")
+			for _, w := range []int{10, 15, 20, 30, 60} {
+				v := s.SwayValues[w]
+				dir := "+"
+				if v < 0 {
+					dir = ""
+				}
+				fmt.Printf("     %3ds: %s%.4f", w, dir, v)
 			}
-			fmt.Printf("     %3ds: %s%.4f", w, dir, v)
+			fmt.Printf("\n")
+			fmt.Printf("   Agreement: %+.3f  |  Magnitude: %.4f  |  S-L Div: %+.4f\n",
+				s.SwayAgreement, s.SwayMagnitude, s.ShortLongDiv)
+		} else {
+			// Combined (spot+market) model: underlying-spot signals.
+			fmt.Printf("   Spot lead: %+.1f bps  |  Barrier P(UP): %.3f  |  Mkt price: %.3f\n",
+				s.SpotLeadBps, s.SpotBarrierProb, s.MarketPrice)
 		}
-		fmt.Printf("\n")
-		fmt.Printf("   Agreement: %+.3f  |  Magnitude: %.4f  |  S-L Div: %+.4f\n",
-			s.SwayAgreement, s.SwayMagnitude, s.ShortLongDiv)
 	} else if d.swayState != nil && !d.swayState.FeaturesOK {
 		fmt.Printf("   Waiting for sufficient price history...\n")
 	} else {
