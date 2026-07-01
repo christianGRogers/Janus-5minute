@@ -116,8 +116,8 @@ type SwayStrategy struct {
 //	SWAY_SCRIPT_PATH    – override predictor path (wins over SWAY_USE_LEGACY)
 //	SWAY_RETRAIN_SCRIPT – override retrain script path
 //	SWAY_ASSET          – asset prefix for the predictor, e.g. "btc" (default: btc)
-//	SWAY_MIN_CONF       – min model confidence to trade (default 0.60)
-//	SWAY_MAX_PRICE      – max entry (ask) price; skip pricier bets (default 0.75)
+//	SWAY_MIN_CONF       – min model confidence to trade (default 0.20)
+//	SWAY_MAX_PRICE      – max entry (ask) price; skip pricier bets (default 0.80)
 //	SWAY_MIN_EDGE       – required model-vs-market divergence for +EV (default 0.05)
 //	SWAY_MAX_REMAINING  – only trade at/under this seconds-remaining (default 60)
 // envFloat returns the float value of env var `key`, or `def` if unset/invalid.
@@ -191,8 +191,12 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 	// bought outcomes already priced >=0.85 with no edge check, which forces
 	// negative-skew "pennies at 0.9+" bets. New defaults require a positive-EV
 	// divergence from the market and cap the entry price.
-	minConf := envFloat("SWAY_MIN_CONF", 0.60)
-	maxEntryPrice := envFloat("SWAY_MAX_PRICE", 0.75)
+	// NB: minConf must stay low enough that it doesn't collide with maxEntryPrice
+	// — a high confidence gate forces raw>=0.8, but then the market ask is usually
+	// also high and gets rejected by the price cap, so almost nothing trades. The
+	// real signal is the edge (model vs ask); confidence is just a coin-flip filter.
+	minConf := envFloat("SWAY_MIN_CONF", 0.20)
+	maxEntryPrice := envFloat("SWAY_MAX_PRICE", 0.80)
 	minEdge := envFloat("SWAY_MIN_EDGE", 0.05)
 	maxRemaining := envInt("SWAY_MAX_REMAINING", 60)
 
