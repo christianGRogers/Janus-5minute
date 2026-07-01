@@ -79,6 +79,9 @@ type SwayStrategy struct {
 
 	maxMarketExposure float64 // fraction of balance; default 0.35
 	minConfidence     float64 // minimum model confidence required to trade
+	maxEntryPrice     float64 // skip buys priced above this (avoid negative-skew near-resolution bets)
+	minEdge           float64 // required model-vs-market divergence (positive-EV margin)
+	maxRemaining      int     // only trade at/under this many seconds remaining
 
 	// Python invocation.
 	pythonBin       string
@@ -113,6 +116,30 @@ type SwayStrategy struct {
 //	SWAY_SCRIPT_PATH    – override predictor path (wins over SWAY_USE_LEGACY)
 //	SWAY_RETRAIN_SCRIPT – override retrain script path
 //	SWAY_ASSET          – asset prefix for the predictor, e.g. "btc" (default: btc)
+//	SWAY_MIN_CONF       – min model confidence to trade (default 0.60)
+//	SWAY_MAX_PRICE      – max entry (ask) price; skip pricier bets (default 0.75)
+//	SWAY_MIN_EDGE       – required model-vs-market divergence for +EV (default 0.05)
+//	SWAY_MAX_REMAINING  – only trade at/under this seconds-remaining (default 60)
+// envFloat returns the float value of env var `key`, or `def` if unset/invalid.
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
+// envInt returns the int value of env var `key`, or `def` if unset/invalid.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 	pythonBin := os.Getenv("SWAY_PYTHON_BIN")
 	if pythonBin == "" {
@@ -160,8 +187,17 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		log.Printf("[Sway] WARNING: PROXY_ADDRESS not set — loss-triggered retrain disabled")
 	}
 
-	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=85%% | stopLoss=$%.2f/share",
-		pythonBin, scriptPath, stopLossOffset)
+	// Entry gates (tuned on out-of-sample backtests). The old defaults only
+	// bought outcomes already priced >=0.85 with no edge check, which forces
+	// negative-skew "pennies at 0.9+" bets. New defaults require a positive-EV
+	// divergence from the market and cap the entry price.
+	minConf := envFloat("SWAY_MIN_CONF", 0.60)
+	maxEntryPrice := envFloat("SWAY_MAX_PRICE", 0.75)
+	minEdge := envFloat("SWAY_MIN_EDGE", 0.05)
+	maxRemaining := envInt("SWAY_MAX_REMAINING", 60)
+
+	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=%.2f | maxPrice=%.2f | minEdge=%.2f | maxRem=%ds | stopLoss=$%.2f/share",
+		pythonBin, scriptPath, minConf, maxEntryPrice, minEdge, maxRemaining, stopLossOffset)
 
 	s := &SwayStrategy{
 		BaseStrategy:       NewBaseStrategy(engine),
@@ -174,7 +210,10 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		positionEntryPrice: make(map[string]float64),
 		pendingOutcome:     make(map[string]string),
 		maxMarketExposure:  0.35,
-		minConfidence:      0.85,
+		minConfidence:      minConf,
+		maxEntryPrice:      maxEntryPrice,
+		minEdge:            minEdge,
+		maxRemaining:       maxRemaining,
 		pythonBin:          pythonBin,
 		modelScriptPath:    scriptPath,
 		retrainScript:      retrainScript,
@@ -409,17 +448,29 @@ func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, no
 		if now.Sub(pred.Timestamp) > 35*time.Second {
 			continue
 		}
-		// Only trade on predictions made at ≤30s remaining — the 60s prediction
-		// has the least market data and is the least reliable.
-		if pred.RemainingAtPred > 30 {
+		if pred.RemainingAtPred > ss.maxRemaining {
 			continue
 		}
 		if pred.Outcome != outcome || pred.Confidence < ss.minConfidence {
 			continue
 		}
 
-		// Never open a position if the market is pricing this outcome below $0.85.
-		if book.BestAskParsed < 0.85 {
+		// Positive-EV divergence: the model's probability for THIS outcome must
+		// exceed the market ask by at least minEdge. (RawPrediction is P(UP).)
+		// This is the edge — buying where the crowd underprices the outcome —
+		// rather than the old logic that just bought near-certain outcomes.
+		modelProb := pred.RawPrediction
+		if outcome == "DOWN" {
+			modelProb = 1.0 - pred.RawPrediction
+		}
+		if modelProb-book.BestAskParsed < ss.minEdge {
+			continue
+		}
+
+		// Avoid negative-skew near-resolution bets: at prices near 1.0 the win
+		// margin is a few cents while a loss costs the whole stake, so one loss
+		// wipes ~12 wins. Skip anything priced above maxEntryPrice.
+		if book.BestAskParsed > ss.maxEntryPrice {
 			continue
 		}
 
