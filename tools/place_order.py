@@ -43,16 +43,15 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         Dict with order result or error
     """
     try:
-        # Validate price is within Polymarket's tradable range. (The old 0.85
-        # floor was a guard for the legacy "buy near-certain only" strategy; the
-        # fusion strategy places lower-priced +EV bets, so enforce only the real
-        # exchange bounds. Override the floor with ORDER_MIN_PRICE if needed.)
-        MIN_PRICE = float(os.getenv("ORDER_MIN_PRICE", "0.01"))
+        # Enforce a minimum entry price of $0.85/share. Buying too cheap put the
+        # bot on the wrong side of markets and lost money, so only take
+        # high-confidence entries. Override with ORDER_MIN_PRICE / ORDER_MAX_PRICE.
+        MIN_PRICE = float(os.getenv("ORDER_MIN_PRICE", "0.85"))
         MAX_PRICE = float(os.getenv("ORDER_MAX_PRICE", "0.99"))
         if price < MIN_PRICE or price > MAX_PRICE:
             return {
                 "success": False,
-                "error": f"Price {price} outside tradable range [{MIN_PRICE}, {MAX_PRICE}]",
+                "error": f"Price {price} outside allowed range [{MIN_PRICE}, {MAX_PRICE}]",
                 "errorMsg": f"Price out of range. Allowed: {MIN_PRICE}-{MAX_PRICE}, Got: {price}"
             }
 
