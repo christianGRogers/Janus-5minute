@@ -43,15 +43,19 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         Dict with order result or error
     """
     try:
-        # Validate minimum price requirement
-        MIN_PRICE = 0.85
-        if price < MIN_PRICE:
+        # Validate price is within Polymarket's tradable range. (The old 0.85
+        # floor was a guard for the legacy "buy near-certain only" strategy; the
+        # fusion strategy places lower-priced +EV bets, so enforce only the real
+        # exchange bounds. Override the floor with ORDER_MIN_PRICE if needed.)
+        MIN_PRICE = float(os.getenv("ORDER_MIN_PRICE", "0.01"))
+        MAX_PRICE = float(os.getenv("ORDER_MAX_PRICE", "0.99"))
+        if price < MIN_PRICE or price > MAX_PRICE:
             return {
                 "success": False,
-                "error": f"Price must be at least ${MIN_PRICE} per share. Provided price: {price}",
-                "errorMsg": f"Price too low. Minimum: ${MIN_PRICE}, Got: {price}"
+                "error": f"Price {price} outside tradable range [{MIN_PRICE}, {MAX_PRICE}]",
+                "errorMsg": f"Price out of range. Allowed: {MIN_PRICE}-{MAX_PRICE}, Got: {price}"
             }
-        
+
         # Get credentials
         private_key = os.getenv("PRIVATE_KEY")
         address = os.getenv("PROXY_ADDRESS")  # The address that will fund the order (must match API key derivation)
