@@ -80,6 +80,7 @@ type SwayStrategy struct {
 	maxMarketExposure float64 // fraction of balance; default 0.35
 	minConfidence     float64 // minimum model confidence required to trade
 	maxEntryPrice     float64 // skip buys priced above this (avoid negative-skew near-resolution bets)
+	minEntryPrice     float64 // skip buys priced below this (avoid contrarian "wrong side" longshots)
 	minEdge           float64 // required model-vs-market divergence (positive-EV margin)
 	maxRemaining      int     // only trade at/under this many seconds remaining
 
@@ -118,6 +119,7 @@ type SwayStrategy struct {
 //	SWAY_ASSET          – asset prefix for the predictor, e.g. "btc" (default: btc)
 //	SWAY_MIN_CONF       – min model confidence to trade (default 0.20)
 //	SWAY_MAX_PRICE      – max entry (ask) price; skip pricier bets (default 0.80)
+//	SWAY_MIN_PRICE      – min entry (ask) price; skip cheaper contrarian bets (default 0.50)
 //	SWAY_MIN_EDGE       – required model-vs-market divergence for +EV (default 0.05)
 //	SWAY_MAX_REMAINING  – only trade at/under this seconds-remaining (default 60)
 // envFloat returns the float value of env var `key`, or `def` if unset/invalid.
@@ -197,11 +199,18 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 	// real signal is the edge (model vs ask); confidence is just a coin-flip filter.
 	minConf := envFloat("SWAY_MIN_CONF", 0.20)
 	maxEntryPrice := envFloat("SWAY_MAX_PRICE", 0.80)
+	// Floor on the entry ask: buying an outcome the market prices below ~0.50
+	// means betting against the crowd's directional call. On fast 5-min BTC
+	// markets the resting ask is usually better-informed than the model, so a
+	// large modelProb-vs-ask "edge" at a low price is adverse selection, not
+	// free money (e.g. buying at 0.34 then losing). Only take the market's
+	// favored side, where the model additionally sees edge.
+	minEntryPrice := envFloat("SWAY_MIN_PRICE", 0.50)
 	minEdge := envFloat("SWAY_MIN_EDGE", 0.05)
 	maxRemaining := envInt("SWAY_MAX_REMAINING", 60)
 
-	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=%.2f | maxPrice=%.2f | minEdge=%.2f | maxRem=%ds | stopLoss=$%.2f/share",
-		pythonBin, scriptPath, minConf, maxEntryPrice, minEdge, maxRemaining, stopLossOffset)
+	log.Printf("[Sway] Initializing SwayStrategy | python=%s | script=%s | minConf=%.2f | minPrice=%.2f | maxPrice=%.2f | minEdge=%.2f | maxRem=%ds | stopLoss=$%.2f/share",
+		pythonBin, scriptPath, minConf, minEntryPrice, maxEntryPrice, minEdge, maxRemaining, stopLossOffset)
 
 	s := &SwayStrategy{
 		BaseStrategy:       NewBaseStrategy(engine),
@@ -216,6 +225,7 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		maxMarketExposure:  0.35,
 		minConfidence:      minConf,
 		maxEntryPrice:      maxEntryPrice,
+		minEntryPrice:      minEntryPrice,
 		minEdge:            minEdge,
 		maxRemaining:       maxRemaining,
 		pythonBin:          pythonBin,
@@ -475,6 +485,15 @@ func (ss *SwayStrategy) checkEntry(markets map[string]*polymarket.MarketBook, no
 		// margin is a few cents while a loss costs the whole stake, so one loss
 		// wipes ~12 wins. Skip anything priced above maxEntryPrice.
 		if book.BestAskParsed > ss.maxEntryPrice {
+			continue
+		}
+
+		// Avoid contrarian "wrong side" longshots: an outcome the market prices
+		// below minEntryPrice is one the crowd thinks is unlikely. On fast 5-min
+		// markets a large model-vs-ask edge at a low ask is usually the model
+		// being wrong (adverse selection), so skip it and only trade the
+		// market's favored side.
+		if book.BestAskParsed < ss.minEntryPrice {
 			continue
 		}
 

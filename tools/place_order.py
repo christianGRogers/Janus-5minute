@@ -43,15 +43,19 @@ def place_order(token_id, price, size, side, tick_size="0.01", neg_risk=False):
         Dict with order result or error
     """
     try:
-        # Enforce a minimum entry price of $0.85/share. Buying too cheap put the
-        # bot on the wrong side of markets and lost money, so only take
-        # high-confidence entries. Override with ORDER_MIN_PRICE / ORDER_MAX_PRICE.
-        MIN_PRICE = float(os.getenv("ORDER_MIN_PRICE", "0.85"))
+        # place_order.py is a dumb executor: enforce only the real exchange
+        # tradable range [0.01, 0.99]. Entry-price selection (min/max ask,
+        # edge) is the strategy's job (see SWAY_MIN_PRICE / SWAY_MAX_PRICE in
+        # pkg/strategies/sway.go) — enforcing it here silently fails orders and
+        # can collide with the strategy gate. ORDER_MIN_PRICE is available as a
+        # backstop but must stay <= the strategy's min or it will reject valid
+        # orders.
+        MIN_PRICE = float(os.getenv("ORDER_MIN_PRICE", "0.01"))
         MAX_PRICE = float(os.getenv("ORDER_MAX_PRICE", "0.99"))
         if price < MIN_PRICE or price > MAX_PRICE:
             return {
                 "success": False,
-                "error": f"Price {price} outside allowed range [{MIN_PRICE}, {MAX_PRICE}]",
+                "error": f"Price {price} outside tradable range [{MIN_PRICE}, {MAX_PRICE}]",
                 "errorMsg": f"Price out of range. Allowed: {MIN_PRICE}-{MAX_PRICE}, Got: {price}"
             }
 
