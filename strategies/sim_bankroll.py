@@ -24,6 +24,7 @@ FEE = 0.072020
 MARGIN = 0.05        # SWAY_MIN_EDGE
 MIN_CONF = 0.20      # SWAY_MIN_CONF
 MAX_PRICE = 0.80     # SWAY_MAX_PRICE
+MIN_PRICE = 0.50     # SWAY_MIN_PRICE — skip contrarian "wrong side" longshots
 RISK_TOL = 0.20
 MAX_EXPOSURE = 0.35
 START = 10.0
@@ -80,6 +81,8 @@ def run(seq, spread):
                 continue
             base_price = p if side == "UP" else (1 - p)
             if base_price > MAX_PRICE:      # skip negative-skew near-resolution bets
+                continue
+            if base_price < MIN_PRICE:      # skip contrarian "wrong side" longshots
                 continue
             confScale = min(1.0, (conf - MIN_CONF) / (1.0 - MIN_CONF) + 0.5)
             cap = MAX_EXPOSURE * bal - exposure
