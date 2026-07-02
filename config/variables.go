@@ -87,7 +87,7 @@ func DefaultConfig() *PolymarketConfig {
 		PaperTradingEnabled: false,
 		OrderGasLimit:       500000,
 		OrderChainID:        chainID,
-		PollIntervalSeconds: 1,
+		PollIntervalSeconds: 2, // fetch order-book market data every 2s
 		PaperTradingRealistic: DefaultPaperTradingRealistic(),
 		Markets: []MarketConfig{
 			{

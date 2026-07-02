@@ -492,7 +492,7 @@ func (d *Dashboard) Render() {
 	} else if d.swayState != nil && !d.swayState.FeaturesOK {
 		fmt.Printf("   Waiting for sufficient price history...\n")
 	} else {
-		fmt.Printf("   No prediction yet (fires at 60s, 30s, 20s, 15s, 10s remaining)\n")
+		fmt.Printf("   No prediction yet (fires every second from 60s to 10s remaining)\n")
 	}
 
 	fmt.Printf("\n────────────────────────────────────────────────────────────────\n\n")
