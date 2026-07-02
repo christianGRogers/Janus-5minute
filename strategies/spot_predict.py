@@ -99,6 +99,9 @@ def main():
         "spot_lead_bps": round(f.get("spot_lead_bps", 0.0), 2),
         "spot_barrier_prob": round(f.get("spot_barrier_prob", 0.5), 4),
         "market_price": round(f.get("last_price", 0.5), 4),
+        # underlying spot: latest price and the market-start (strike) reference
+        "spot_price": round(float(spot["close"][-1]), 2),
+        "spot_open": round(float(spot["open"]), 2),
         "model_strategy": art.get("strategy", ""),
         # model-identity fields (consumed by the Go bot's dashboard/logging)
         "model_version": "combined",
