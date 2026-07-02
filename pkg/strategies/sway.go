@@ -17,11 +17,14 @@ import (
 	"janus-bot/pkg/trading"
 )
 
-// swayPredictionSlots are the seconds-remaining values at which we run the model.
-var swayPredictionSlots = []int{60, 30, 20, 15, 10}
-
-// swayPredictionTolerance is how many seconds off the slot we still fire (±).
-const swayPredictionTolerance = 3
+// Continuous prediction window: the model is re-run every second while the
+// seconds-remaining is in [swayPredictFloor, swayPredictCeil]. This replaces
+// the old discrete slot grid ({60,30,20,15,10}±3) so the bot can enter at any
+// second the confidence/edge/price line up, not just at coarse checkpoints.
+// The bounds match the range the model is trained on (see REMAINING_TIMES in
+// strategies/models.py) so inference never extrapolates past trained times.
+const swayPredictCeil = 60  // start predicting at 60s remaining
+const swayPredictFloor = 10 // stop predicting at 10s remaining
 
 // stopLossOffset is the per-share price drop that triggers an exit.
 const stopLossOffset = 0.20
@@ -44,10 +47,11 @@ type priceTick struct {
 
 // SwayStrategy uses the v2 sway model to predict market direction and place orders.
 //
-// Every 5-second tick it:
+// Every tick it:
 //  1. Records the current UP-outcome mid-price for each live market.
-//  2. At key remaining-time slots (60s, 30s, 20s, 15s, 10s), fires an async
-//     Python inference call that writes a SwayPrediction for the market.
+//  2. While the market sits in the prediction window (60s→10s remaining),
+//     fires an async Python inference every second (one at a time per market)
+//     that writes a SwayPrediction, so entries can happen at any second.
 //  3. Checks open positions for two exit conditions (highest priority):
 //     a. Stop-loss: best bid ≤ entry price − $0.20/share → sell all at best bid.
 //     b. Outcome flip: fresh prediction now opposes the held outcome → sell all at best bid.
@@ -63,8 +67,13 @@ type SwayStrategy struct {
 	predMu      sync.Mutex
 	predictions map[string]*SwayPrediction
 
-	// Which prediction slots have already fired for each market.
-	predictedSlots map[string]map[int]bool
+	// Continuous prediction bookkeeping (per market):
+	//   predInFlight   — a python inference is currently running, so we don't
+	//                    stack overlapping processes; the next fire waits for it.
+	//   lastPredSecond — the seconds-remaining value we last fired at, so we
+	//                    fire at most once per integer second.
+	predInFlight   map[string]bool
+	lastPredSecond map[string]int
 
 	// Inventory and exposure tracking.
 	ownedInventory map[string]float64
@@ -216,7 +225,8 @@ func NewSwayStrategy(engine trading.TradingEngine) *SwayStrategy {
 		BaseStrategy:       NewBaseStrategy(engine),
 		priceHistory:       make(map[string][]priceTick),
 		predictions:        make(map[string]*SwayPrediction),
-		predictedSlots:     make(map[string]map[int]bool),
+		predInFlight:       make(map[string]bool),
+		lastPredSecond:     make(map[string]int),
 		ownedInventory:     make(map[string]float64),
 		marketExposure:     make(map[string]float64),
 		positionOutcome:    make(map[string]string),
@@ -269,7 +279,7 @@ func (ss *SwayStrategy) SetDashboard(d *analytics.Dashboard) {
 	}
 }
 
-// EvaluateV2 is called every 5 seconds by main.go.
+// EvaluateV2 is called every second by main.go.
 func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *TradeSignal {
 	now := time.Now()
 	windowStart := (now.Unix() / 300) * 300
@@ -308,29 +318,40 @@ func (ss *SwayStrategy) EvaluateV2(markets map[string]*polymarket.MarketBook) *T
 		})
 		ss.historyMu.Unlock()
 
-		for _, slot := range swayPredictionSlots {
-			if swayAbsInt(secondsRemaining-slot) <= swayPredictionTolerance {
-				ss.predMu.Lock()
-				if ss.predictedSlots[marketID] == nil {
-					ss.predictedSlots[marketID] = make(map[int]bool)
-				}
-				alreadyFired := ss.predictedSlots[marketID][slot]
-				ss.predMu.Unlock()
+		// Continuous cadence: fire an inference every second the market sits in
+		// the prediction window, as long as one isn't already running for it.
+		if secondsRemaining >= swayPredictFloor && secondsRemaining <= swayPredictCeil {
+			ss.predMu.Lock()
+			// Fire at most once per integer second, and never while a previous
+			// inference for this market is still in flight (avoids stacking
+			// python processes / Binance fetches).
+			fire := !ss.predInFlight[marketID] && ss.lastPredSecond[marketID] != secondsRemaining
+			if fire {
+				ss.predInFlight[marketID] = true
+				ss.lastPredSecond[marketID] = secondsRemaining
+			}
+			ss.predMu.Unlock()
 
-				if !alreadyFired {
-					ss.retrainingMu.Lock()
-					isRetraining := ss.retraining
-					ss.retrainingMu.Unlock()
+			if fire {
+				ss.retrainingMu.Lock()
+				isRetraining := ss.retraining
+				ss.retrainingMu.Unlock()
 
-					if isRetraining {
-						// Leave slot unfired so it retries next tick once retrain finishes.
-						log.Printf("[Sway] Skipping %ds prediction for %s — retrain in progress", slot, marketID)
-					} else {
+				if isRetraining {
+					// Release the in-flight/second guard so the next tick retries
+					// once the retrain finishes.
+					ss.predMu.Lock()
+					ss.predInFlight[marketID] = false
+					ss.lastPredSecond[marketID] = 0
+					ss.predMu.Unlock()
+					log.Printf("[Sway] Skipping %ds prediction for %s — retrain in progress", secondsRemaining, marketID)
+				} else {
+					go func(mID string, mStart int64, el, rem int) {
+						ss.runPrediction(mID, mStart, el, rem)
 						ss.predMu.Lock()
-						ss.predictedSlots[marketID][slot] = true
+						ss.predInFlight[mID] = false
 						ss.predMu.Unlock()
-						go ss.runPrediction(marketID, marketStart, int(elapsed), slot)
-					}
+					}(marketID, marketStart, int(elapsed), secondsRemaining)
 				}
 			}
 		}
@@ -763,7 +784,8 @@ func (ss *SwayStrategy) OnMarketWindowChange() {
 
 	ss.predMu.Lock()
 	ss.predictions = make(map[string]*SwayPrediction)
-	ss.predictedSlots = make(map[string]map[int]bool)
+	ss.predInFlight = make(map[string]bool)
+	ss.lastPredSecond = make(map[string]int)
 	ss.predMu.Unlock()
 
 	ss.ownedInventory = make(map[string]float64)
@@ -873,11 +895,4 @@ func swayParseMarketStart(slug string) (int64, bool) {
 		return 0, false
 	}
 	return ts, true
-}
-
-func swayAbsInt(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
 }

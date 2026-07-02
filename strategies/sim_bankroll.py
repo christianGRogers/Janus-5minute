@@ -3,7 +3,7 @@
 Realistic bankroll simulation of the LIVE bot over a sequence of markets.
 
 Mirrors pkg/strategies/sway.go behavior:
-  - predict at 30/20/15/10s remaining (live only trades <=30s)
+  - predict every second from 60s to 10s remaining (continuous cadence)
   - confidence gate (>=0.85), positive-EV divergence gate (>3%)
   - fractional sizing: stake = balance * RiskTolerance(0.20) * confScale,
     capped at 35% market exposure; min 0.5 shares
@@ -28,7 +28,7 @@ MIN_PRICE = 0.50     # SWAY_MIN_PRICE — skip contrarian "wrong side" longshots
 RISK_TOL = 0.20
 MAX_EXPOSURE = 0.35
 START = 10.0
-SLOTS = [60, 30, 20, 15, 10]   # SWAY_MAX_REMAINING=60
+SLOTS = list(range(60, 9, -1))   # continuous eval, 60..10s remaining (matches live)
 
 
 def load_model():

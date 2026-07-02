@@ -195,8 +195,11 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Run continuously with periodic market data display
-	ticker := time.NewTicker(5 * time.Second)
+	// Run continuously. Tick every second so the strategy re-evaluates (and can
+	// fire a fresh model prediction) every second the market is in its entry
+	// window, rather than only at coarse checkpoints. Market data itself is
+	// fetched on the fetcher's own PollIntervalSeconds cadence.
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	discoveryReported := false
