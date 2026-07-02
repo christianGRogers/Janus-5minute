@@ -602,6 +602,8 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 		SpotLeadBps     float64 `json:"spot_lead_bps"`
 		SpotBarrierProb float64 `json:"spot_barrier_prob"`
 		MarketPrice     float64 `json:"market_price"`
+		SpotPrice       float64 `json:"spot_price"`
+		SpotOpen        float64 `json:"spot_open"`
 		// Model identity fields populated by sway_predict.py
 		ModelVersion      string  `json:"model_version"`
 		ModelAccuracy     float64 `json:"model_accuracy"`
@@ -682,6 +684,19 @@ func (ss *SwayStrategy) runPrediction(marketID string, marketStart int64, elapse
 			SpotLeadBps:     result.SpotLeadBps,
 			SpotBarrierProb: result.SpotBarrierProb,
 			MarketPrice:     result.MarketPrice,
+			SpotPrice:       result.SpotPrice,
+			SpotOpen:        result.SpotOpen,
+			// Entry-gate thresholds (env-tuned) so the dashboard can show the
+			// pass/fail of each condition and why a trade did/didn't fire.
+			MinConf:         ss.minConfidence,
+			MinEntryPrice:   ss.minEntryPrice,
+			MaxEntryPrice:   ss.maxEntryPrice,
+			MinEdge:         ss.minEdge,
+			MaxRemaining:    ss.maxRemaining,
+			// Sizing inputs.
+			Balance:         ss.Engine.GetBalance(),
+			BaseUSDC:        ss.GetDynamicPositionSize(),
+			MaxExposureFrac: ss.maxMarketExposure,
 		})
 	}
 }

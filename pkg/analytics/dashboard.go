@@ -26,7 +26,23 @@ type SwayModelState struct {
 	// Combined (spot+market) model signals — populated when SwayValues is empty
 	SpotLeadBps     float64
 	SpotBarrierProb float64
-	MarketPrice     float64
+	MarketPrice     float64 // UP-outcome market price (last)
+	SpotPrice       float64 // latest underlying spot (e.g. BTCUSDT)
+	SpotOpen        float64 // underlying price at market start (the strike)
+
+	// Entry-gate thresholds (what the signals must clear to trade). Populated
+	// from the strategy's env-tuned config so the dashboard can show, per
+	// prediction, which conditions pass and why a trade did or didn't fire.
+	MinConf       float64
+	MinEntryPrice float64
+	MaxEntryPrice float64
+	MinEdge       float64
+	MaxRemaining  int
+
+	// Sizing inputs (how a potential trade's size is derived).
+	Balance         float64 // current account balance
+	BaseUSDC        float64 // GetDynamicPositionSize(): balance × risk tolerance
+	MaxExposureFrac float64 // per-market exposure cap as a fraction of balance
 }
 
 // ModelInfo holds the currently loaded model's identity and live session stats.
@@ -403,9 +419,75 @@ func (d *Dashboard) Render() {
 			fmt.Printf("   Agreement: %+.3f  |  Magnitude: %.4f  |  S-L Div: %+.4f\n",
 				s.SwayAgreement, s.SwayMagnitude, s.ShortLongDiv)
 		} else {
-			// Combined (spot+market) model: underlying-spot signals.
-			fmt.Printf("   Spot lead: %+.1f bps  |  Barrier P(UP): %.3f  |  Mkt price: %.3f\n",
-				s.SpotLeadBps, s.SpotBarrierProb, s.MarketPrice)
+			// Combined (spot+market) model: underlying + entry-gate decision.
+			// Convert to the chosen outcome's view: modelProb is the model's
+			// probability for that outcome, outcomeAsk its market price.
+			modelProb := s.RawPrediction
+			outcomeAsk := s.MarketPrice
+			if s.Outcome == "DOWN" {
+				modelProb = 1 - s.RawPrediction
+				outcomeAsk = 1 - s.MarketPrice
+			}
+			edge := modelProb - outcomeAsk
+
+			// Underlying spot vs the market-start strike.
+			if s.SpotPrice > 0 {
+				fmt.Printf("   Underlying: $%.0f  (start $%.0f, %+.1f bps)  |  Barrier P(UP): %.3f\n",
+					s.SpotPrice, s.SpotOpen, s.SpotLeadBps, s.SpotBarrierProb)
+			}
+
+			// Entry gate: each condition vs its threshold, with a verdict.
+			chk := func(ok bool) string {
+				if ok {
+					return "✓"
+				}
+				return "✗"
+			}
+			edgeOK := edge >= s.MinEdge
+			priceOK := outcomeAsk >= s.MinEntryPrice && outcomeAsk <= s.MaxEntryPrice
+			confOK := s.Confidence >= s.MinConf
+			timeOK := s.RemainingAtPred <= s.MaxRemaining
+			verdict := "TRADE ✅"
+			if !(edgeOK && priceOK && confOK && timeOK) {
+				reason := "conf"
+				switch {
+				case !edgeOK:
+					reason = "edge"
+				case !priceOK:
+					reason = "price"
+				case !timeOK:
+					reason = "timing"
+				}
+				verdict = "NO TRADE (" + reason + ")"
+			}
+			fmt.Printf("   Entry gate for %s @ ask %.3f (model %.3f):\n", s.Outcome, outcomeAsk, modelProb)
+			fmt.Printf("     edge %+.3f ≥ %.2f %s   price %.3f ∈ [%.2f,%.2f] %s   conf %.0f%% ≥ %.0f%% %s   %ds ≤ %ds %s\n",
+				edge, s.MinEdge, chk(edgeOK),
+				outcomeAsk, s.MinEntryPrice, s.MaxEntryPrice, chk(priceOK),
+				s.Confidence*100, s.MinConf*100, chk(confOK),
+				s.RemainingAtPred, s.MaxRemaining, chk(timeOK))
+			fmt.Printf("     → %s\n", verdict)
+
+			// Sizing: base (balance×risk) scaled by confidence, capped by
+			// per-market exposure. Matches checkEntry's sizing math.
+			confScale := (s.Confidence-s.MinConf)/(1.0-s.MinConf) + 0.5
+			if confScale > 1.0 {
+				confScale = 1.0
+			}
+			if confScale < 0 {
+				confScale = 0
+			}
+			projUSDC := s.BaseUSDC * confScale
+			capUSDC := s.Balance * s.MaxExposureFrac
+			if projUSDC > capUSDC {
+				projUSDC = capUSDC
+			}
+			projShares := 0.0
+			if outcomeAsk > 0 {
+				projShares = projUSDC / outcomeAsk
+			}
+			fmt.Printf("     size: $%.2f base × %.2f conf = $%.2f → ~%.1f sh  (cap $%.2f)\n",
+				s.BaseUSDC, confScale, projUSDC, projShares, capUSDC)
 		}
 	} else if d.swayState != nil && !d.swayState.FeaturesOK {
 		fmt.Printf("   Waiting for sufficient price history...\n")
